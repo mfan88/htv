@@ -461,6 +461,11 @@ async function refreshLabels() {
 }
 setInterval(refreshLabels, LABELS_POLL_MS);
 
+/* ---------------- Window chrome ---------------- */
+
+// Lets the CSS leave room for the OS window buttons (see "Hidden title bar" in style.css).
+document.body.classList.add("platform-" + window.htv.platform);
+
 /* ---------------- Sidebar collapse ---------------- */
 
 function setSidebar(collapsed) {

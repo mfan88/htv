@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("htv", {
+  platform: process.platform,
   getStreams: () => ipcRenderer.invoke("htv:get-streams"),
   refresh: () => ipcRenderer.invoke("htv:refresh"),
   extract: (link, opts) => ipcRenderer.invoke("htv:extract", link, opts),

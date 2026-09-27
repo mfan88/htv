@@ -97,6 +97,12 @@ function createWindow() {
     backgroundColor: "#0b0d12",
     title: "htv",
     icon: path.join(__dirname, "assets", "icon.png"),
+    // No title bar: the app's background runs to the top edge. macOS keeps its
+    // traffic lights inset; Windows/Linux draw min/max/close over the app's colours.
+    titleBarStyle: "hidden",
+    ...(process.platform === "darwin"
+      ? { trafficLightPosition: { x: 18, y: 20 } }
+      : { titleBarOverlay: { color: "#0b0d12", symbolColor: "#8a93a6", height: 40 } }),
     webPreferences: {
       partition: MAIN_PARTITION,
       preload: path.join(__dirname, "preload.js"),

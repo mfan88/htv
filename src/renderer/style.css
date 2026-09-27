@@ -84,6 +84,16 @@ body.sidebar-collapsed .side-toggle { color: var(--accent); }
 /* Main / player */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 20px 24px; gap: 14px; }
 .top { display: flex; align-items: flex-start; gap: 20px; }
+
+/* Hidden title bar: the sidebar header and the header above the player move the window;
+   anything interactive inside them stays clickable. */
+.brand, .top { -webkit-app-region: drag; }
+.brand button, .top button, .top select, .stats { -webkit-app-region: no-drag; }
+/* Room for the window buttons: macOS traffic lights sit top-left,
+   Windows/Linux min/max/close sit top-right. */
+body.platform-darwin .brand { padding-left: 90px; }
+body.platform-darwin.sidebar-collapsed .top { padding-left: 64px; }
+body:not(.platform-darwin) .top { padding-right: 130px; }
 .now { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; min-height: 28px; }
 .now h1 { margin: 0; font-size: 20px; font-weight: 700; }
 .now .sub { color: var(--muted); }
