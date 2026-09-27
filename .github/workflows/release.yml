@@ -35,6 +35,8 @@ jobs:
       - run: npm ci
 
       - name: Build and publish
+        # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.
+        shell: bash
         run: npx electron-builder ${{ matrix.target }} --publish always -c.publish.provider=github -c.publish.releaseType=draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
