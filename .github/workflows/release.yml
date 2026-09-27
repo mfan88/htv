@@ -58,7 +58,15 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
 
           echo "Signing identities found:"
-          security find-identity -v -p codesigning "$KEYCHAIN"
+          security find-identity -v -p codesigning "$KEYCHAIN" | tee "$RUNNER_TEMP/identities.txt"
+
+          # Notarization only accepts "Developer ID Application" certificates. With any
+          # other kind (e.g. "Apple Development"), fall back to an ad-hoc signed build.
+          if grep -q '"Developer ID Application:' "$RUNNER_TEMP/identities.txt"; then
+            echo "DEVELOPER_ID_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=Mac build not notarized::MAC_CERT_P12_BASE64 is not a 'Developer ID Application' certificate (see the identities above). Building an ad-hoc signed, un-notarized app instead. Create a Developer ID Application certificate (paid Apple Developer Program) and update the secret."
+          fi
 
       - name: Build and publish
         # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.
@@ -70,9 +78,11 @@ jobs:
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
           extra=()
-          if [ "$RUNNER_OS" = "macOS" ] && [ "$HAS_MAC_CERT" != "true" ]; then
-            # No Developer ID: ad-hoc sign, or Apple Silicon Macs refuse to run the app.
+          if [ "$RUNNER_OS" = "macOS" ] && [ "${DEVELOPER_ID_OK:-}" != "true" ]; then
+            # No usable Developer ID: ad-hoc sign (Apple Silicon Macs refuse to run
+            # unsigned apps) and skip notarization, which would reject the build.
             extra+=("-c.mac.identity=-")
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
           fi
           npx electron-builder ${{ matrix.target }} --publish always \
             -c.publish.provider=github -c.publish.releaseType=draft "${extra[@]}"
