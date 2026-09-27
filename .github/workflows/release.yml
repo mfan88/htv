@@ -37,13 +37,24 @@ jobs:
       - name: Build and publish
         # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.
         shell: bash
-        run: npx electron-builder ${{ matrix.target }} --publish always -c.publish.provider=github -c.publish.releaseType=draft
+        run: |
+          # Secrets that aren't set arrive as empty strings, which electron-builder treats
+          # as real values (an empty CSC_LINK resolves to the project folder). Drop them.
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          extra=()
+          if [ "$RUNNER_OS" = "macOS" ] && [ -z "${CSC_LINK:-}" ]; then
+            # No Developer ID yet: ad-hoc sign, or Apple Silicon Macs refuse to run the app.
+            extra+=("-c.mac.identity=-")
+          fi
+          npx electron-builder ${{ matrix.target }} --publish always \
+            -c.publish.provider=github -c.publish.releaseType=draft "${extra[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization. Unset secrets just produce an unsigned build.
+          # macOS signing + notarization (only used on the Mac job; see README).
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || '' }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 != '' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
