@@ -41,8 +41,54 @@ In the app, the ⚙ next to Refresh can switch to **Generate links on this compu
 |---|---|
 | `GET /health` | `{ ok, version }`, no token needed |
 | `GET /api/streams` | the scraped schedule plus `checks: { link: { status: "ok" \| "fail", at } }` |
+| `GET /api/play?link=…` | extracts a listed NHL link and returns `{ ok, src }`, a proxied HLS URL |
+| `GET /api/labels` | `CGY-EDM 1-3` style score labels for the listed games |
+| `GET /s/…` | the stream proxy; URLs are signed by `/api/play`, so they need no token |
+| `GET /api/tv-update` | the Android TV build in `<data>/androidtv/`: `{ available, versionCode, versionName, url }` |
+| `GET /api/tv-update/apk` | that build's APK |
+| `GET /` | the phone web player (below); it asks for the token itself |
 
 Server settings are environment variables in `docker-compose.yml`: `HTV_TOKEN` (from `.env`), `HTV_CONCURRENCY` (default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787). To run it without Docker: `npx electron src/server.js`; on Linux without a display, use `xvfb-run -a`.
+
+## iPhone and AirPlay
+
+The server also serves a web player for phones at `/`. The server extracts each stream and proxies it (with its own ad blocking and popup blocking), so the phone only ever loads a plain HLS stream: there are no embed pages, ads or popups on the phone. Safari plays it natively, which means **AirPlay sends the stream itself to an Apple TV**, not a mirror of the phone's screen. The Apple TV then fetches the video from the server directly, and the phone works as a remote.
+
+Setup, once per phone: open `http://<server's LAN IP>:8787/#token=<HTV_TOKEN>` in Safari. The page saves the token and removes it from the address bar. Then use Share → **Add to Home Screen**.
+
+- **At home, use the server's LAN address**, not its Tailscale `100.x` one. The Apple TV fetches the stream from whatever address the phone used, and it isn't on the tailnet.
+- **Away from home, the Funnel URL works too**, but the video then comes over your home upload.
+- Android phones and desktop browsers can use the page too (through hls.js), just without AirPlay.
+
+## Android TV
+
+`androidtv/` is a small Android TV app (Kotlin, Compose for TV, ExoPlayer) that uses the same server: it lists the games, and the server extracts and proxies whichever link you pick. On the remote, OK plays or pauses, ◀ ▶ switch between the game's links, and Back returns to the list. If a link fails, the app moves on to the next one.
+
+Build it (needs JDK 21 and the Android SDK; the version follows `package.json`):
+
+```sh
+cd androidtv
+printf 'sdk.dir=/path/to/android/sdk\nhtv.serverUrl=http://192.168.1.20:8787\nhtv.token=<HTV_TOKEN>\n' > local.properties
+./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
+```
+
+`htv.serverUrl` and `htv.token` (or the `HTV_SERVER_URL` / `HTV_TOKEN` env vars) become the built-in server; you can also set one in the app's Settings. Install on the TV by turning on Developer options → Network debugging (or USB debugging), then:
+
+```sh
+adb connect <tv-ip>
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+The APK is signed with the local debug key, so reinstalling a build from a different machine needs an uninstall first.
+
+**Updates without adb:** after the first install, publish new builds to the server and the app shows **Install update** in its header (it checks at startup and every 30 minutes). Copy the build into the server's data folder (`htv-data/` next to `docker-compose.yml`):
+
+```sh
+./gradlew assembleRelease
+scp app/build/outputs/apk/release/{app-release.apk,output-metadata.json} <server>:htv/htv-data/androidtv/
+```
+
+The first update asks you to allow installs from htv (Settings → allow, then press Install update again); after that each update is one confirmation. Android closes the app while it updates, so reopen it afterwards. Every build gets a higher version code (seconds since 2026), so any new build counts as an update. Updates must come from the same machine as the first install, because the signing key has to match.
 
 ## Building locally
 

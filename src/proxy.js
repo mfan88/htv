@@ -6,14 +6,17 @@
 // hook (see decorate()) to add the Referer/Origin/User-Agent the embed used.
 //
 // URL shape: htvstream://s/<contextId>?u=<encoded upstream url>
+// Server mode serves the same thing over HTTP (see server.js) through respond().
 
 const { protocol } = require("electron");
 const crypto = require("crypto");
 
 const SCHEME = "htvstream";
 const MARKER = "x-htv-ctx";
-const contexts = new Map(); // contextId -> headers
-const MAX_CONTEXTS = 20;
+const contexts = new Map(); // contextId -> headers, least recently used first
+// Every link check adds a context, so keep enough that a stream being watched is never
+// evicted by a round of checks (it's also moved to the end on every request).
+const MAX_CONTEXTS = 100;
 
 function registerScheme() {
   // Must run before the app is ready.
@@ -34,9 +37,10 @@ function proxify(id, url) {
   return `${SCHEME}://s/${id}?u=${encodeURIComponent(url)}`;
 }
 
-function rewritePlaylist(text, baseUrl, id) {
+// `wrap` turns an absolute upstream URL into the URL the player should request.
+function rewritePlaylist(text, baseUrl, wrap) {
   const abs = u => {
-    try { return proxify(id, new URL(u, baseUrl).href); } catch { return u; }
+    try { return wrap(new URL(u, baseUrl).href); } catch { return u; }
   };
   return text.split(/\r?\n/).map(line => {
     const t = line.trim();
@@ -90,15 +94,15 @@ function decorate(requestHeaders) {
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
 
-async function handle(request, fetchSession) {
-  const reqUrl = new URL(request.url);
-  const id = reqUrl.pathname.slice(1);
-  const target = reqUrl.searchParams.get("u");
-  if (!contexts.has(id) || !target || !/^https?:\/\//i.test(target)) {
+// The response for one proxied request of stream context `id`. Playlists are rewritten
+// so that every URL in them goes through `wrap`.
+async function respond(fetchSession, id, target, range, wrap) {
+  const headers = contexts.get(id);
+  if (!headers || !target || !/^https?:\/\//i.test(target)) {
     return new Response("unknown stream", { status: 404, headers: CORS });
   }
-
-  const range = request.headers.get("range");
+  contexts.delete(id);
+  contexts.set(id, headers);
 
   let res;
   try {
@@ -111,7 +115,7 @@ async function handle(request, fetchSession) {
   if (res.ok && isPlaylist(target, contentType)) {
     const text = await res.text();
     if (text.trimStart().startsWith("#EXTM3U")) {
-      return new Response(rewritePlaylist(text, finalUrl(res, target), id), {
+      return new Response(rewritePlaylist(text, finalUrl(res, target), wrap), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/vnd.apple.mpegurl" },
       });
@@ -130,9 +134,15 @@ async function handle(request, fetchSession) {
   return new Response(res.body, { status: res.status, headers: outHeaders });
 }
 
+function handle(request, fetchSession) {
+  const reqUrl = new URL(request.url);
+  const id = reqUrl.pathname.slice(1);
+  return respond(fetchSession, id, reqUrl.searchParams.get("u"), request.headers.get("range"), u => proxify(id, u));
+}
+
 // Serve htvstream:// in `ses` (the player's session), fetching upstream via `fetchSession`.
 function install(ses, fetchSession) {
   ses.protocol.handle(SCHEME, request => handle(request, fetchSession));
 }
 
-module.exports = { registerScheme, install, addContext, proxify, rewritePlaylist, decorate, probe };
+module.exports = { registerScheme, install, addContext, hasContext: id => contexts.has(id), proxify, respond, rewritePlaylist, decorate, probe };
