@@ -41,6 +41,7 @@ In the app, the ⚙ next to Refresh can switch to **Generate links on this compu
 |---|---|
 | `GET /health` | `{ ok, version }`, no token needed |
 | `GET /api/streams` | the scraped schedule plus `checks: { link: { status: "ok" \| "fail", at } }` |
+| `GET /api/summary` | flat numbers for dashboards: `status`, `uptimeSec`, `lastScrape`, `links`, `workingLinks`, `failedLinks`, `pendingLinks`, `liveGames`, `upcomingGames`, `finishedGames`, `gamesToday` (games from the NHL API) |
 | `GET /api/play?link=…` | extracts a listed NHL link and returns `{ ok, src }`, a proxied HLS URL |
 | `GET /api/labels` | `CGY-EDM 1-3` style score labels for the listed games |
 | `GET /s/…` | the stream proxy; URLs are signed by `/api/play`, so they need no token |

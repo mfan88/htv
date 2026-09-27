@@ -39,7 +39,7 @@ app.disableHardwareAcceleration();
 app.on("window-all-closed", () => {});
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
-const state = { data: null, error: null, startedAt: new Date().toISOString() };
+const state = { data: null, error: null, scrapedAt: null, startedAt: new Date().toISOString() };
 let extractSes = null;
 const streamsFile = () => path.join(app.getPath("userData"), "streams.json");
 
@@ -47,6 +47,7 @@ async function refresh() {
   try {
     state.data = await scraper.scrape(streamsFile());
     state.error = null;
+    state.scrapedAt = new Date().toISOString();
   } catch (err) {
     state.error = err.message || String(err);
     if (!state.data && fs.existsSync(streamsFile())) {
@@ -69,6 +70,42 @@ function sendJson(res, code, body) {
   const json = JSON.stringify(body);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(json);
+}
+
+// Flat numbers for dashboards (e.g. a Homepage customapi widget).
+async function summary() {
+  const links = engine.nhlLinks(state.data);
+  const st = checker.statuses();
+  const count = s => links.filter(l => st[l] === s).length;
+  const working = count("ok"), failed = count("fail");
+
+  let games = null, nhlError = null;
+  try {
+    games = (await stats.scoreboard()).games || [];
+  } catch (err) {
+    nhlError = err.message || String(err);
+  }
+  const inState = (...states) => games ? games.filter(g => states.includes(g.gameState)).length : null;
+
+  // Scrapes run every REFRESH_MS; missing two in a row means something is wrong.
+  const stale = state.scrapedAt && Date.now() - Date.parse(state.scrapedAt) > 2 * REFRESH_MS + 60000;
+  return {
+    status: state.error ? "scrape failing" : !state.scrapedAt ? "starting" : stale ? "stale" : "ok",
+    version: VERSION,
+    uptimeSec: Math.round(process.uptime()),
+    startedAt: state.startedAt,
+    lastScrape: state.scrapedAt,
+    scrapeError: state.error,
+    links: links.length,
+    workingLinks: working,
+    failedLinks: failed,
+    pendingLinks: links.length - working - failed,
+    liveGames: inState("LIVE", "CRIT"),
+    upcomingGames: inState("FUT", "PRE"),
+    finishedGames: inState("OFF", "FINAL"),
+    gamesToday: games ? games.length : null,
+    nhlError,
+  };
 }
 
 /* ---------------- Web player ---------------- */
@@ -187,6 +224,9 @@ function startHttp() {
         checks: checker.snapshot(),
         server: { version: VERSION, startedAt: state.startedAt },
       });
+    }
+    if (url.pathname === "/api/summary") {
+      return summary().then(body => sendJson(res, 200, body), err => sendJson(res, 500, { error: err.message }));
     }
     if (url.pathname === "/api/play") {
       return play(req, res, url).catch(err => sendJson(res, 500, { ok: false, error: err.message }));

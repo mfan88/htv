@@ -112,4 +112,4 @@ async function labels(gameNames) {
   return out;
 }
 
-module.exports = { forGame, labels, teamsIn };
+module.exports = { forGame, labels, teamsIn, scoreboard };
