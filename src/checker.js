@@ -1,23 +1,23 @@
-// Background link checker: runs every NHL link through the extractor, a couple at a
+// Background link checker: runs every NHL link through the extractor, a few at a
 // time, so the UI can hide dead links and start verified ones instantly.
 
-const CONCURRENCY = 2;
 const RECHECK_MS = 10 * 60 * 1000; // links often come alive at puck drop
 const FRESH_CAPTURE_MS = 60 * 1000; // stream tokens expire; reuse captures only briefly
 
 const results = new Map(); // link -> { status: "checking" | "ok" | "fail", capture, at }
 let queue = [];
 let running = 0;
+let concurrency = 2;
 let onStatus = () => {};
 let extractFn = null; // (link) => Promise<capture | null>, set by init()
 
-function setStatus(link, status, capture = null) {
-  results.set(link, { status, capture, at: Date.now() });
+function setStatus(link, status, capture = null, at = Date.now()) {
+  results.set(link, { status, capture, at });
   onStatus(link, status);
 }
 
 function pump() {
-  while (running < CONCURRENCY && queue.length) {
+  while (running < concurrency && queue.length) {
     const link = queue.shift();
     running++;
     setStatus(link, "checking");
@@ -28,9 +28,9 @@ function pump() {
   }
 }
 
-// Queue every link that has never been checked or whose result is stale.
-// Links no longer listed are dropped.
-function check(links) {
+// Queue every link that has never been checked or, unless `recheck` is false, whose
+// result is stale. Links no longer listed are dropped.
+function check(links, { recheck = true } = {}) {
   const listed = new Set(links);
   queue = queue.filter(l => listed.has(l));
   for (const l of [...results.keys()]) if (!listed.has(l)) results.delete(l);
@@ -38,7 +38,7 @@ function check(links) {
   for (const link of listed) {
     const r = results.get(link);
     if (queue.includes(link) || r?.status === "checking") continue;
-    if (!r || now - r.at > RECHECK_MS) queue.push(link);
+    if (!r || (recheck && now - r.at > RECHECK_MS)) queue.push(link);
   }
   pump();
 }
@@ -53,11 +53,33 @@ function statuses() {
   return Object.fromEntries([...results].map(([l, r]) => [l, r.status]));
 }
 
+// Finished results with their check time: { link: { status, at } }. Used for the
+// on-disk cache and the server API.
+function snapshot() {
+  const out = {};
+  for (const [link, r] of results) if (r.status !== "checking") out[link] = { status: r.status, at: r.at };
+  return out;
+}
+
+// Adopt results checked elsewhere (the disk cache or an htv server) when they're newer
+// than what we have. Links being checked right now are left alone.
+function seed(checks) {
+  for (const [link, c] of Object.entries(checks || {})) {
+    if (!c || !["ok", "fail"].includes(c.status) || typeof c.at !== "number") continue;
+    const r = results.get(link);
+    if (r?.status === "checking" || (r && r.at >= c.at)) continue;
+    setStatus(link, c.status, null, c.at);
+  }
+}
+
 module.exports = {
   init(fn) { extractFn = fn; },
+  setConcurrency(n) { concurrency = Math.max(1, n | 0); pump(); },
   check,
   freshCapture,
   statuses,
+  snapshot,
+  seed,
   record: setStatus,
   onStatusChange(fn) { onStatus = fn; },
 };

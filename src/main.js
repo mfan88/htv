@@ -1,10 +1,9 @@
 const path = require("path");
 const fs = require("fs");
 const { app, BrowserWindow, ipcMain, session, shell, Menu } = require("electron");
-const { ElectronBlocker } = require("@ghostery/adblocker-electron");
 
+const engine = require("./engine");
 const scraper = require("./scraper");
-const extractor = require("./extractor");
 const checker = require("./checker");
 const proxy = require("./proxy");
 const stats = require("./stats");
@@ -13,71 +12,97 @@ const MAIN_PARTITION = "persist:main";
 const BLOCKED_KEYS = ["t", "n", "w"]; // Ctrl(+Shift)+T/N/W
 const ONHOCKEY_REFERER = "https://onhockey.tv/";
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
-const NHL_LEAGUES = ["nhl", "nhl preseason"];
+const SERVER_TIMEOUT_MS = 5000;
 
-// A closed stdout/stderr (e.g. piped into a pager) must not crash the app.
-for (const s of [process.stdout, process.stderr]) s?.on?.("error", () => {});
-
-proxy.registerScheme();
-app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
-// Some stream hosts refuse browsers that advertise Electron.
-app.userAgentFallback = app.userAgentFallback.replace(/\s(htv|Electron)\/\S+/g, "");
+engine.configure();
 
 let mainWindow = null;
 let extractSes = null;
-const state = { data: null, error: null };
-const streamsFile = () => path.join(app.getPath("userData"), "streams.json");
+let settings = { serverUrl: "", token: "" };
+// source: where the list came from ("server" | "local"); refreshing: a refresh is in flight.
+const state = { data: null, error: null, serverError: null, source: "local", refreshing: false };
+
+const dataFile = name => path.join(app.getPath("userData"), name);
+const readJson = file => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
+const writeJson = (file, obj) => { try { fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf8"); } catch {} };
+
+// Link statuses are cached on disk so the next launch starts with them.
+let saveChecksTimer = null;
+function saveChecksSoon() {
+  clearTimeout(saveChecksTimer);
+  saveChecksTimer = setTimeout(() => writeJson(dataFile("checks.json"), checker.snapshot()), 2000);
+}
+
+/* ---------------- Refreshing the list ---------------- */
+
+function normalizeServerUrl(raw) {
+  const s = String(raw || "").trim().replace(/\/+$/, "");
+  if (!s) return "";
+  return /^https?:\/\//i.test(s) ? s : "http://" + s;
+}
+
+async function fetchFromServer() {
+  const res = await fetch(settings.serverUrl + "/api/streams", {
+    headers: settings.token ? { Authorization: "Bearer " + settings.token } : {},
+    signal: AbortSignal.timeout(SERVER_TIMEOUT_MS),
+  });
+  if (res.status === 401) throw new Error("the server rejected the token");
+  if (!res.ok) throw new Error(`the server returned HTTP ${res.status}`);
+  const d = await res.json();
+  if (!Array.isArray(d.streams)) throw new Error("unexpected response from the server");
+  return d;
+}
 
 async function refresh() {
-  try {
-    state.data = await scraper.scrape(streamsFile());
-    state.error = null;
-  } catch (err) {
-    state.error = err.message || String(err);
-    if (!state.data && fs.existsSync(streamsFile())) {
-      state.data = JSON.parse(fs.readFileSync(streamsFile(), "utf8"));
+  state.refreshing = true;
+  let fromServer = false;
+  if (settings.serverUrl) {
+    try {
+      const d = await fetchFromServer();
+      state.data = { updated: d.updated, source_utc_offset: d.source_utc_offset, streams: d.streams };
+      state.error = d.error || null;
+      writeJson(dataFile("streams.json"), state.data);
+      checker.seed(d.checks);
+      state.serverError = null;
+      fromServer = true;
+    } catch (err) {
+      state.serverError = err.cause?.code || err.name === "TimeoutError" ? "can't reach the server" : err.message;
     }
   }
-  const nhl = (state.data?.streams || []).filter(r => NHL_LEAGUES.includes(r.league.toLowerCase()));
-  checker.check([...new Set(nhl.map(r => r.link))]);
+  if (!fromServer) {
+    try {
+      state.data = await scraper.scrape(dataFile("streams.json"));
+      state.error = null;
+    } catch (err) {
+      state.error = err.message || String(err);
+      state.data ??= readJson(dataFile("streams.json"));
+    }
+  }
+  state.source = fromServer ? "server" : "local";
+  // With a server, only check links it hasn't checked yet; it keeps the rest current.
+  checker.check(engine.nhlLinks(state.data), { recheck: !fromServer });
+  saveChecksSoon();
+  state.refreshing = false;
   return payload();
 }
 
 function payload() {
-  return { ...(state.data || { updated: null, streams: [] }), error: state.error, statuses: checker.statuses() };
+  return {
+    ...(state.data || { updated: null, streams: [] }),
+    error: state.error,
+    statuses: checker.statuses(),
+    source: state.source,
+    serverError: state.serverError,
+    serverConfigured: !!settings.serverUrl,
+    refreshing: state.refreshing,
+  };
 }
 
 function send(channel, data) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, data);
 }
 
-async function setupAdblock(sessions) {
-  const cache = path.join(app.getPath("userData"), "adblock-engine.bin");
-  try {
-    const blocker = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetch, {
-      path: cache,
-      read: fs.promises.readFile,
-      write: fs.promises.writeFile,
-    });
-    // Each enableBlockingInSession() registers the same global ipcMain handlers, which
-    // throws from the second session on. One blocker serves every session through those
-    // handlers, so skip the duplicate registrations.
-    const handle = ipcMain.handle;
-    const registered = new Set();
-    ipcMain.handle = (channel, fn) => {
-      if (registered.has(channel)) return;
-      registered.add(channel);
-      handle.call(ipcMain, channel, fn);
-    };
-    try {
-      for (const ses of sessions) blocker.enableBlockingInSession(ses);
-    } finally {
-      ipcMain.handle = handle;
-    }
-  } catch (err) {
-    console.error("adblock unavailable:", err);
-  }
-}
+/* ---------------- Window ---------------- */
 
 function hardenSessions(mainSes) {
   // Embeds in the fallback player expect to be framed by onhockey.tv.
@@ -132,20 +157,10 @@ function createWindow() {
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
-// No popups from anything, anywhere (ads, pop-unders, "click to play" traps).
-app.on("web-contents-created", (_e, contents) => {
-  contents.setWindowOpenHandler(() => ({ action: "deny" }));
-});
+/* ---------------- IPC ---------------- */
 
 ipcMain.handle("htv:get-streams", () => payload());
 ipcMain.handle("htv:refresh", () => refresh());
-// Extract a link's stream and confirm its playlist really loads through the proxy.
-async function extractVerified(link, opts) {
-  const capture = await extractor.extract(link, opts);
-  if (!capture) return null;
-  const id = proxy.addContext(capture.headers);
-  return (await proxy.probe(extractSes, id, capture.url)) ? { ...capture, id } : null;
-}
 
 let userExtraction = null; // AbortController for the link the user clicked last
 ipcMain.handle("htv:extract", async (_e, link, { fresh = false } = {}) => {
@@ -154,7 +169,7 @@ ipcMain.handle("htv:extract", async (_e, link, { fresh = false } = {}) => {
   const controller = userExtraction = new AbortController();
   let capture = fresh ? null : checker.freshCapture(link);
   if (!capture) {
-    capture = await extractVerified(link, { signal: controller.signal });
+    capture = await engine.extractVerified(link, { signal: controller.signal });
     if (controller.signal.aborted) return { ok: false, cancelled: true };
     checker.record(link, capture ? "ok" : "fail", capture);
   }
@@ -173,23 +188,39 @@ ipcMain.handle("htv:mark-failed", (_e, link) => { if (typeof link === "string") 
 ipcMain.handle("htv:open-external", (_e, link) => {
   if (typeof link === "string" && link) shell.openExternal("https://" + link.replace(/^https?:\/\//, ""));
 });
+ipcMain.handle("htv:get-settings", () => ({ serverUrl: settings.serverUrl, hasToken: !!settings.token }));
+// `token` undefined keeps the saved token; an empty string clears it.
+ipcMain.handle("htv:set-settings", async (_e, next = {}) => {
+  settings = {
+    serverUrl: normalizeServerUrl(next.serverUrl),
+    token: typeof next.token === "string" ? next.token.trim() : settings.token,
+  };
+  writeJson(dataFile("settings.json"), settings);
+  return refresh();
+});
+
+/* ---------------- Startup ---------------- */
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  settings = { ...settings, ...readJson(dataFile("settings.json")) };
   const mainSes = session.fromPartition(MAIN_PARTITION);
-  extractSes = session.fromPartition(extractor.PARTITION);
-  extractSes.webRequest.onBeforeSendHeaders((details, callback) => {
-    extractor.observe(details);
-    proxy.decorate(details.requestHeaders);
-    callback({ requestHeaders: details.requestHeaders });
-  });
+  extractSes = engine.setupExtractSession();
   proxy.install(mainSes, extractSes);
   hardenSessions(mainSes);
-  checker.init(extractVerified);
-  checker.onStatusChange((link, status) => send("htv:link-status", { link, status }));
-  await setupAdblock([mainSes, extractSes]); // before any checks, so hidden loads are ad-free too
-  await refresh();
+  checker.onStatusChange((link, status) => {
+    send("htv:link-status", { link, status });
+    if (status !== "checking") saveChecksSoon();
+  });
+
+  // Open straight away with the last session's list and statuses; refresh behind it.
+  state.data = readJson(dataFile("streams.json"));
+  checker.seed(readJson(dataFile("checks.json")));
+  state.refreshing = true;
   createWindow();
+
+  await engine.setupAdblock([mainSes, extractSes]); // before any checks, so hidden loads are ad-free too
+  send("htv:streams", await refresh());
   setInterval(async () => send("htv:streams", await refresh()), AUTO_REFRESH_MS);
 });
 

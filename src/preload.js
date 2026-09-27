@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld("htv", {
   gameStats: gameName => ipcRenderer.invoke("htv:game-stats", gameName),
   gameLabels: names => ipcRenderer.invoke("htv:game-labels", names),
   onRefreshShortcut: fn => ipcRenderer.on("htv:refresh-shortcut", () => fn()),
+  getSettings: () => ipcRenderer.invoke("htv:get-settings"),
+  setSettings: s => ipcRenderer.invoke("htv:set-settings", s),
 });

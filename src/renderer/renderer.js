@@ -49,8 +49,10 @@ function render(data = lastData) {
   const working = links.filter(l => statuses[l] === "ok").length;
   const pending = links.filter(l => statuses[l] !== "ok" && statuses[l] !== "fail").length;
   const updated = data.updated ? new Date(data.updated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never";
-  $("status").innerHTML = `Updated ${esc(updated)} · ${working} working`
-    + (pending ? ` · checking ${pending} more…` : "")
+  const source = data.source === "server" ? ` · <span class="src">via server</span>` : "";
+  $("status").innerHTML = (data.updated ? `Updated ${esc(updated)}${source} · ${working} working` : "Loading…")
+    + (pending && data.updated ? ` · checking ${pending} more…` : "")
+    + (data.serverError ? `<span class="err">Server: ${esc(data.serverError)}. Checking links locally.</span>` : "")
     + (data.error ? `<span class="err">Refresh failed: ${esc(data.error)}</span>` : "");
 
   const leagues = new Map(); // league -> (time|game -> {time, game, links})
@@ -64,7 +66,7 @@ function render(data = lastData) {
 
   const box = $("games");
   if (!leagues.size) {
-    box.innerHTML = `<div class="empty">No NHL games listed right now.</div>`;
+    box.innerHTML = `<div class="empty">${data.refreshing ? "Loading games…" : "No NHL games listed right now."}</div>`;
     return;
   }
 
@@ -460,6 +462,41 @@ async function refreshLabels() {
   if (player.current) $("nowTitle").textContent = gameLabel(player.current.game);
 }
 setInterval(refreshLabels, LABELS_POLL_MS);
+
+/* ---------------- Server settings ---------------- */
+
+$("btnSettings").addEventListener("click", async () => {
+  const form = $("settings");
+  form.hidden = !form.hidden;
+  if (form.hidden) return;
+  const s = await window.htv.getSettings();
+  $("serverUrl").value = s.serverUrl;
+  $("serverToken").value = "";
+  $("serverToken").placeholder = s.hasToken ? "saved (type to replace)" : "optional";
+  $("serverUrl").focus();
+});
+
+$("settings").addEventListener("submit", async e => {
+  e.preventDefault();
+  const token = $("serverToken").value;
+  $("settings").hidden = true;
+  $("refresh").disabled = true;
+  $("refresh").classList.add("loading");
+  try {
+    // An empty token field keeps the saved token unless the server is being cleared.
+    const serverUrl = $("serverUrl").value;
+    const data = await window.htv.setSettings({ serverUrl, token: token || (serverUrl.trim() ? undefined : "") });
+    statuses = { ...data.statuses };
+    render(data);
+    refreshLabels();
+  } finally {
+    $("refresh").disabled = false;
+    $("refresh").classList.remove("loading");
+  }
+  $("btnSettings").classList.toggle("on", !!$("serverUrl").value.trim());
+});
+
+window.htv.getSettings().then(s => $("btnSettings").classList.toggle("on", !!s.serverUrl));
 
 /* ---------------- Window chrome ---------------- */
 

@@ -1,0 +1,17 @@
+# Run on your home server:   docker compose up -d --build
+# Then in the htv app: Settings (gear) → htv server = http://<server's Tailscale IP>:8787
+services:
+  htv:
+    build: .
+    container_name: htv-server
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # Change this, then enter the same token in the app. Remove the line to disable auth.
+      HTV_TOKEN: change-me
+      HTV_CONCURRENCY: 3      # links checked at once
+      HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
+    volumes:
+      - ./htv-data:/data      # caches (schedule, ad-block filters)
+    shm_size: 512m            # Chromium needs more shared memory than Docker's 64 MB default

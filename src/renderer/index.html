@@ -14,7 +14,22 @@
       <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
       Refresh
     </button>
+    <button class="ctl gear" id="btnSettings" title="Server settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
   </div>
+  <form class="settings" id="settings" hidden>
+    <label>htv server
+      <input id="serverUrl" type="text" placeholder="http://100.x.y.z:8787" spellcheck="false" autocomplete="off">
+    </label>
+    <label>Token
+      <input id="serverToken" type="password" placeholder="optional" autocomplete="off">
+    </label>
+    <div class="settings-actions">
+      <span class="hint">Leave the server empty to check links on this computer.</span>
+      <button class="chip" type="submit">Save</button>
+    </div>
+  </form>
   <div class="status" id="status">Loading…</div>
   <div id="games"></div>
 </aside>

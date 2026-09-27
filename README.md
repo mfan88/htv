@@ -21,6 +21,27 @@ npm run scrape     # scrape onhockey.tv to streams.json without the UI
 
 Keyboard: `Space`/`K` play-pause · `M` mute · `F` fullscreen · `↑`/`↓` volume · `S` toggle sidebar · `F5` refresh · `F12` devtools.
 
+## Home server (optional)
+
+htv can run headless on an always-on machine and keep the list and link checks current around the clock. The app then starts from the server's results instead of checking every link itself. This works best on a server at home: stream hosts often block data-centre IPs, and checks run from the same connection the app uses.
+
+```sh
+# on the server (Linux + Docker)
+git clone https://github.com/mfan88/htv.git && cd htv
+# edit docker-compose.yml: set HTV_TOKEN to a secret of your choice
+docker compose up -d --build
+docker compose logs -f          # watch links being checked
+```
+
+In the app, click the ⚙ next to Refresh and enter `http://<server>:8787` (e.g. its Tailscale IP) and the same token. The status line shows **via server** when it's working; if the server can't be reached, the app checks links itself as before.
+
+| Endpoint | |
+|---|---|
+| `GET /health` | `{ ok, version }`, no token needed |
+| `GET /api/streams` | the scraped schedule plus `checks: { link: { status: "ok" \| "fail", at } }` |
+
+Server settings are environment variables in `docker-compose.yml`: `HTV_TOKEN`, `HTV_CONCURRENCY` (default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787). To run it without Docker: `npx electron src/server.js`; on Linux without a display, use `xvfb-run -a`.
+
 ## Building locally
 
 ```sh
