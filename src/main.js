@@ -18,7 +18,10 @@ engine.configure();
 
 let mainWindow = null;
 let extractSes = null;
-let settings = { serverUrl: "", token: "" };
+// mode "server" uses the saved server, else the built-in one; "local" scrapes and checks here.
+let settings = { mode: "server", serverUrl: "", token: "" };
+// The built-in server, written into src/defaults.json by the release workflow (git-ignored).
+const defaults = (() => { try { return require("./defaults.json"); } catch { return {}; } })();
 // source: where the list came from ("server" | "local"); refreshing: a refresh is in flight.
 const state = { data: null, error: null, serverError: null, source: "local", refreshing: false };
 
@@ -41,9 +44,17 @@ function normalizeServerUrl(raw) {
   return /^https?:\/\//i.test(s) ? s : "http://" + s;
 }
 
-async function fetchFromServer() {
-  const res = await fetch(settings.serverUrl + "/api/streams", {
-    headers: settings.token ? { Authorization: "Bearer " + settings.token } : {},
+// The server to use, or null to work locally. A saved server replaces the built-in one.
+function activeServer() {
+  if (settings.mode === "local") return null;
+  if (settings.serverUrl) return { url: settings.serverUrl, token: settings.token };
+  const url = normalizeServerUrl(defaults.serverUrl);
+  return url ? { url, token: defaults.token || "" } : null;
+}
+
+async function fetchFromServer(server) {
+  const res = await fetch(server.url + "/api/streams", {
+    headers: server.token ? { Authorization: "Bearer " + server.token } : {},
     signal: AbortSignal.timeout(SERVER_TIMEOUT_MS),
   });
   if (res.status === 401) throw new Error("the server rejected the token");
@@ -56,17 +67,20 @@ async function fetchFromServer() {
 async function refresh() {
   state.refreshing = true;
   let fromServer = false;
-  if (settings.serverUrl) {
+  const server = activeServer();
+  state.serverError = null;
+  if (server) {
     try {
-      const d = await fetchFromServer();
+      const d = await fetchFromServer(server);
       state.data = { updated: d.updated, source_utc_offset: d.source_utc_offset, streams: d.streams };
       state.error = d.error || null;
       writeJson(dataFile("streams.json"), state.data);
       checker.seed(d.checks);
-      state.serverError = null;
       fromServer = true;
     } catch (err) {
-      state.serverError = err.cause?.code || err.name === "TimeoutError" ? "can't reach the server" : err.message;
+      // Network errors: Node's fetch sets cause.code; Electron's only says "fetch failed".
+      const unreachable = err.cause?.code || err.name === "TimeoutError" || err.message === "fetch failed";
+      state.serverError = unreachable ? "can't reach the server" : err.message;
     }
   }
   if (!fromServer) {
@@ -93,7 +107,7 @@ function payload() {
     statuses: checker.statuses(),
     source: state.source,
     serverError: state.serverError,
-    serverConfigured: !!settings.serverUrl,
+    serverConfigured: !!activeServer(),
     refreshing: state.refreshing,
   };
 }
@@ -188,10 +202,16 @@ ipcMain.handle("htv:mark-failed", (_e, link) => { if (typeof link === "string") 
 ipcMain.handle("htv:open-external", (_e, link) => {
   if (typeof link === "string" && link) shell.openExternal("https://" + link.replace(/^https?:\/\//, ""));
 });
-ipcMain.handle("htv:get-settings", () => ({ serverUrl: settings.serverUrl, hasToken: !!settings.token }));
+ipcMain.handle("htv:get-settings", () => ({
+  mode: settings.mode,
+  serverUrl: settings.serverUrl,
+  hasToken: !!settings.token,
+  hasBuiltIn: !!defaults.serverUrl,
+}));
 // `token` undefined keeps the saved token; an empty string clears it.
 ipcMain.handle("htv:set-settings", async (_e, next = {}) => {
   settings = {
+    mode: next.mode === "local" ? "local" : "server",
     serverUrl: normalizeServerUrl(next.serverUrl),
     token: typeof next.token === "string" ? next.token.trim() : settings.token,
   };

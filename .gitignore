@@ -1,5 +1,6 @@
 node_modules/
 dist/
+htv-data/
 *.log
 .DS_Store
 Thumbs.db
@@ -10,3 +11,4 @@ Thumbs.db
 *.cer
 *.p8
 .env
+src/defaults.json

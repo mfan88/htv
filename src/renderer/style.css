@@ -58,6 +58,9 @@ body.sidebar-collapsed .side-toggle { color: var(--accent); }
 .settings input { background: #0d1017; border: 1px solid var(--border); border-radius: 6px; color: var(--text);
   padding: 6px 8px; font: inherit; font-size: 13px; user-select: text; }
 .settings input:focus { outline: none; border-color: var(--accent); }
+.settings label.check { flex-direction: row; align-items: center; gap: 8px; }
+.settings label.check input { accent-color: var(--accent); margin: 0; }
+.settings input:disabled { opacity: .45; }
 .settings-actions { display: flex; align-items: center; gap: 8px; }
 .settings-actions .hint { flex: 1; }
 .status .src { color: #bcd3ff; }

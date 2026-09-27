@@ -44,10 +44,10 @@ curl -H "Authorization: Bearer <token>" localhost:8787/api/streams
 
 Done and tested on Windows: the app, the release pipeline (v1.0.0 released; the Mac build is signed and notarized), and server mode (auth, scraping, checks), plus app ↔ server (via server / wrong token / server down).
 
-**Not yet tested (next step):** the **Docker image**. It was written on a Windows machine without a Docker engine. On the Linux server:
-1. `docker compose up -d --build` and fix whatever the build or runtime needs. Likely suspects: missing Electron runtime libraries in the Dockerfile's apt list, and the sandbox/shared-memory flags.
-2. Confirm `docker compose logs -f` shows `listening`, a `schedule: … NHL` line, then `ok`/`fail` lines.
-3. From another machine on the tailnet, `curl http://<tailscale-ip>:8787/health`.
-4. In the app's ⚙ settings, enter the server URL and token, and check that the status line says "via server".
+**Docker image: tested on the Linux server.** `docker compose up -d --build` builds. Logs show `listening`, `schedule: … NHL`, then `ok`/`fail`. `/health` answers on the Tailscale IP, and `/api/streams` returns 401 without the token. Gotcha: `xvfb-run` hangs as PID 1 (Xvfb starts but Electron never does), so the image runs under `tini`.
+
+**Built-in server:** the app defaults to the server in `src/defaults.json` (`{serverUrl, token}`, git-ignored). The release workflow writes that file from the `HTV_SERVER_URL`/`HTV_TOKEN` secrets. Without it (dev runs), the app works locally unless a server is set in ⚙. ⚙ also has "Generate links on this computer" (`settings.mode = "local"`). The server token lives in `.env` (git-ignored) and is published via Tailscale Funnel at `https://zimaboard.fennec-lydian.ts.net:8443`; port 443 on that box serves something else, tailnet-only, so leave it alone. The token in the app is extractable by design.
+
+**Not yet tested:** a release build carrying `defaults.json` on Windows/macOS, reaching the server through Funnel off the tailnet.
 
 Ideas the owner has discussed but not asked for: reusing the server's stream captures for instant playback when the app is on the same network (tokens appear to be tied to the requesting IP), and publishing the image to GHCR from CI.

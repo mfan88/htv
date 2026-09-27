@@ -25,6 +25,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       HAS_MAC_CERT: ${{ secrets.MAC_CERT_P12_BASE64 != '' }}
+      HAS_BUILTIN_SERVER: ${{ secrets.HTV_SERVER_URL != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +68,16 @@ jobs:
           else
             echo "::warning title=Mac build not notarized::MAC_CERT_P12_BASE64 is not a 'Developer ID Application' certificate (see the identities above). Building an ad-hoc signed, un-notarized app instead. Create a Developer ID Application certificate (paid Apple Developer Program) and update the secret."
           fi
+
+      # The built-in server the app uses by default. Kept out of the repo, but anyone
+      # can read it from the packaged app: it only keeps out random scanners.
+      - name: Write built-in server
+        if: env.HAS_BUILTIN_SERVER == 'true'
+        shell: bash
+        env:
+          HTV_SERVER_URL: ${{ secrets.HTV_SERVER_URL }}
+          HTV_TOKEN: ${{ secrets.HTV_TOKEN }}
+        run: node -e 'require("fs").writeFileSync("src/defaults.json", JSON.stringify({ serverUrl: process.env.HTV_SERVER_URL, token: process.env.HTV_TOKEN }))'
 
       - name: Build and publish
         # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.

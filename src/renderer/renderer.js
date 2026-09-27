@@ -54,6 +54,7 @@ function render(data = lastData) {
     + (pending && data.updated ? ` · checking ${pending} more…` : "")
     + (data.serverError ? `<span class="err">Server: ${esc(data.serverError)}. Checking links locally.</span>` : "")
     + (data.error ? `<span class="err">Refresh failed: ${esc(data.error)}</span>` : "");
+  $("btnSettings").classList.toggle("on", !!data.serverConfigured);
 
   const leagues = new Map(); // league -> (time|game -> {time, game, links})
   for (const r of streams) {
@@ -465,15 +466,30 @@ setInterval(refreshLabels, LABELS_POLL_MS);
 
 /* ---------------- Server settings ---------------- */
 
+let builtIn = false; // the app ships with a built-in server
+
+// Server fields only matter when links come from a server.
+function syncSettingsForm() {
+  const local = $("localMode").checked;
+  $("serverUrl").disabled = $("serverToken").disabled = local;
+  $("settingsHint").textContent = local ? "onhockey.tv is scraped and links are checked here."
+    : builtIn ? "Leave the server empty to use the built-in one."
+    : "Leave the server empty to check links on this computer.";
+}
+$("localMode").addEventListener("change", syncSettingsForm);
+
 $("btnSettings").addEventListener("click", async () => {
   const form = $("settings");
   form.hidden = !form.hidden;
   if (form.hidden) return;
   const s = await window.htv.getSettings();
+  builtIn = s.hasBuiltIn;
+  $("localMode").checked = s.mode === "local";
   $("serverUrl").value = s.serverUrl;
+  $("serverUrl").placeholder = builtIn ? "built-in server" : "http://100.x.y.z:8787";
   $("serverToken").value = "";
   $("serverToken").placeholder = s.hasToken ? "saved (type to replace)" : "optional";
-  $("serverUrl").focus();
+  syncSettingsForm();
 });
 
 $("settings").addEventListener("submit", async e => {
@@ -485,7 +501,11 @@ $("settings").addEventListener("submit", async e => {
   try {
     // An empty token field keeps the saved token unless the server is being cleared.
     const serverUrl = $("serverUrl").value;
-    const data = await window.htv.setSettings({ serverUrl, token: token || (serverUrl.trim() ? undefined : "") });
+    const data = await window.htv.setSettings({
+      mode: $("localMode").checked ? "local" : "server",
+      serverUrl,
+      token: token || (serverUrl.trim() ? undefined : ""),
+    });
     statuses = { ...data.statuses };
     render(data);
     refreshLabels();
@@ -493,10 +513,8 @@ $("settings").addEventListener("submit", async e => {
     $("refresh").disabled = false;
     $("refresh").classList.remove("loading");
   }
-  $("btnSettings").classList.toggle("on", !!$("serverUrl").value.trim());
 });
 
-window.htv.getSettings().then(s => $("btnSettings").classList.toggle("on", !!s.serverUrl));
 
 /* ---------------- Window chrome ---------------- */
 

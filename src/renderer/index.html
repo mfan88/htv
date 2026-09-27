@@ -19,6 +19,7 @@
     </button>
   </div>
   <form class="settings" id="settings" hidden>
+    <label class="check"><input id="localMode" type="checkbox"> Generate links on this computer</label>
     <label>htv server
       <input id="serverUrl" type="text" placeholder="http://100.x.y.z:8787" spellcheck="false" autocomplete="off">
     </label>
@@ -26,7 +27,7 @@
       <input id="serverToken" type="password" placeholder="optional" autocomplete="off">
     </label>
     <div class="settings-actions">
-      <span class="hint">Leave the server empty to check links on this computer.</span>
+      <span class="hint" id="settingsHint"></span>
       <button class="chip" type="submit">Save</button>
     </div>
   </form>

@@ -1,5 +1,5 @@
 # Run on your home server:   docker compose up -d --build
-# Then in the htv app: Settings (gear) → htv server = http://<server's Tailscale IP>:8787
+# Public via Tailscale Funnel: tailscale funnel --bg --https=8443 http://127.0.0.1:8787
 services:
   htv:
     build: .
@@ -8,8 +8,9 @@ services:
     ports:
       - "8787:8787"
     environment:
-      # Change this, then enter the same token in the app. Remove the line to disable auth.
-      HTV_TOKEN: change-me
+      # Put HTV_TOKEN=<random string> in .env next to this file (git-ignored). Release
+      # builds carry the same token (GitHub secret HTV_TOKEN) as their built-in server.
+      HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
       HTV_CONCURRENCY: 3      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
     volumes:
