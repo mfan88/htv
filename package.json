@@ -10,8 +10,7 @@
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "release": "electron-builder --publish always"
+    "dist:linux": "electron-builder --linux"
   },
   "keywords": [
     "hockey",
@@ -72,13 +71,7 @@
         "AppImage"
       ],
       "category": "Video"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "releaseType": "draft"
-      }
-    ]
+    }
   },
   "private": true
 }

@@ -35,7 +35,7 @@ jobs:
       - run: npm ci
 
       - name: Build and publish
-        run: npx electron-builder ${{ matrix.target }} --publish always
+        run: npx electron-builder ${{ matrix.target }} --publish always -c.publish.provider=github -c.publish.releaseType=draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS signing + notarization. Unset secrets just produce an unsigned build.
