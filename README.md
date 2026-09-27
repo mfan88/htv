@@ -1,4 +1,8 @@
-# htv
+<p align="center">
+  <img src="build/icon.png" alt="htv icon" width="160">
+</p>
+
+<h1 align="center">htv</h1>
 
 A desktop app for watching NHL streams listed on onhockey.tv, with its own player, built-in ad blocking and live game stats.
 
