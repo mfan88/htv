@@ -77,7 +77,8 @@ jobs:
         env:
           HTV_SERVER_URL: ${{ secrets.HTV_SERVER_URL }}
           HTV_TOKEN: ${{ secrets.HTV_TOKEN }}
-        run: node -e 'require("fs").writeFileSync("src/defaults.json", JSON.stringify({ serverUrl: process.env.HTV_SERVER_URL, token: process.env.HTV_TOKEN }))'
+        run: |
+          node -e 'require("fs").writeFileSync("src/defaults.json", JSON.stringify({ serverUrl: process.env.HTV_SERVER_URL, token: process.env.HTV_TOKEN }))'
 
       - name: Build and publish
         # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.
