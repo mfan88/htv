@@ -23,6 +23,8 @@ jobs:
           - os: ubuntu-latest
             target: --linux
     runs-on: ${{ matrix.os }}
+    env:
+      HAS_MAC_CERT: ${{ secrets.MAC_CERT_P12_BASE64 != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -34,27 +36,51 @@ jobs:
 
       - run: npm ci
 
+      # Import the Developer ID certificate into a fresh keychain ourselves (GitHub's
+      # documented approach). electron-builder's own keychain import fails on recent
+      # macOS runners; it finds the identity in this keychain instead.
+      - name: Import Mac signing certificate
+        if: runner.os == 'macOS' && env.HAS_MAC_CERT == 'true'
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MAC_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+          echo "Signing identities found:"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build and publish
         # bash on every OS: Windows' default PowerShell splits "-c.publish.x=y" at the dot.
         shell: bash
         run: |
-          # Secrets that aren't set arrive as empty strings, which electron-builder treats
-          # as real values (an empty CSC_LINK resolves to the project folder). Drop them.
-          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+          # Secrets that aren't set arrive as empty strings, which electron-builder
+          # treats as real values. Drop them.
+          for v in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
           extra=()
-          if [ "$RUNNER_OS" = "macOS" ] && [ -z "${CSC_LINK:-}" ]; then
-            # No Developer ID yet: ad-hoc sign, or Apple Silicon Macs refuse to run the app.
+          if [ "$RUNNER_OS" = "macOS" ] && [ "$HAS_MAC_CERT" != "true" ]; then
+            # No Developer ID: ad-hoc sign, or Apple Silicon Macs refuse to run the app.
             extra+=("-c.mac.identity=-")
           fi
           npx electron-builder ${{ matrix.target }} --publish always \
             -c.publish.provider=github -c.publish.releaseType=draft "${extra[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (only used on the Mac job; see README).
-          CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_P12_BASE64 || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERT_PASSWORD || '' }}
+          # Only the keychain above is used for signing on the Mac job; never on others.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ runner.os == 'macOS' }}
+          # Notarization (see README).
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
