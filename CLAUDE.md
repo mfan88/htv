@@ -13,6 +13,7 @@ Electron desktop app (Windows / macOS universal / Linux) for watching NHL stream
 | `src/extractor.js` | Loads an embed in two hidden, muted windows at once (onhockey's wrapper page and the bare embed) and captures the first `.m3u8` GET plus the player's request headers |
 | `src/proxy.js` | `htvstream://` protocol: fetches upstream through the extract session and rewrites playlists; `decorate()` swaps a marker header for the captured headers; `probe()` checks that a playlist really loads. `respond()` is shared with the server's HTTP proxy |
 | `src/checker.js` | Queue of link checks (`setConcurrency`); `snapshot()`/`seed()` exchange `{link: {status, at}}` with disk caches and the server |
+| `src/updater.js` | In-app updates (electron-updater) from GitHub Releases: checks at startup and every 4 h, downloads in the background, "Restart to update" chip in the sidebar. Drafts are invisible to it, so publishing a draft is what rolls an update out. The portable exe only links to the release page |
 | `src/stats.js` | NHL public API (`api-web.nhle.com/v1/score/now`): live stats panel and `CGY-EDM 1-3` labels. onhockey lists games "away - home" |
 | `src/renderer/` | UI: sidebar, hls.js player with custom controls, stats panel, server settings (⚙) |
 | `androidtv/` | Android TV app (Kotlin, Compose for TV, Media3 ExoPlayer), a client of server mode's API. Built-in server from `androidtv/local.properties` (`htv.serverUrl`, `htv.token`, git-ignored) or `HTV_SERVER_URL`/`HTV_TOKEN` |
@@ -52,6 +53,8 @@ Done and tested on Windows: the app, the release pipeline (v1.0.0 released; the 
 **Phone web player:** removed (it lived in `src/web/`, see git history before it was deleted). It played the proxied HLS in a browser; the idea (native HLS playback so AirPlay hands the stream itself to an Apple TV) was never tested on a real iPhone, and applies to a native iOS app too.
 
 **Android TV app:** tested on a Google TV emulator (API 36) against local server mode: list, focus, playback, switching links, pause, Back, Settings, and the in-app update (`Updater.kt`, served from `<data>/androidtv/` by `/api/tv-update`) from one build to a newer one. Not yet tested on a real TV. Build with JDK 21 (`JAVA_HOME=.../temurin-21.jdk/...`); the SDK on the owner's Mac is at `/opt/homebrew/share/android-commandlinetools`, with an AVD named `htv_tv`. The emulator reaches the host at `10.0.2.2`, and `adb exec-out screencap -p` takes screenshots. Tested on the owner's Mi TV too (Android 14): list and live playback through `https://htv.fenna.tech`. Publish updates with `androidtv/publish.sh <ssh host>`.
+
+**Desktop updates:** tested on macOS with two locally built, Developer ID-signed apps (1.0.4 → 1.0.5) against a local generic feed: check, background download, Restart to update, relaunch as 1.0.5. Recipe: a test electron-builder config with `publish: {provider: generic, url}` (don't mix `-c.publish.provider=generic` with the github settings in package.json; the schema rejects it), and `HTV_UPDATE_TEST=<dev-app-update.yml>` makes a dev run check too. The macOS updater installs from the zip built next to the dmg. Not yet tested on Windows or Linux.
 
 **Not yet tested:** a release build carrying `defaults.json` on Windows/macOS, reaching the server at its public address off the tailnet.
 

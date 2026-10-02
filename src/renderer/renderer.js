@@ -538,6 +538,21 @@ document.addEventListener("keydown", e => {
 
 $("refresh").addEventListener("click", () => load(true));
 window.htv.onRefreshShortcut(() => load(true));
+
+/* ---------------- Updates ---------------- */
+
+// Shown once an update has downloaded (restart installs it), or, for builds that can't
+// update themselves (the portable exe), when one is out.
+function showUpdate(s) {
+  const btn = $("btnUpdate");
+  btn.hidden = !s || !["ready", "available"].includes(s.status);
+  if (btn.hidden) return;
+  btn.textContent = s.status === "ready" ? "Restart to update" : "Update ↗";
+  btn.title = s.status === "ready" ? `htv ${s.version} is ready to install` : `htv ${s.version} is out: open the download page`;
+}
+$("btnUpdate").addEventListener("click", () => window.htv.installUpdate());
+window.htv.getUpdate().then(showUpdate);
+window.htv.onUpdate(showUpdate);
 window.htv.onLinkStatus(({ link, status }) => { statuses[link] = status; renderSoon(); });
 // Background re-fetch (every 5 min) pushes a fresh list with the checker's statuses.
 window.htv.onStreams(data => { statuses = { ...data.statuses }; render(data); });

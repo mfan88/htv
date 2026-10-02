@@ -14,4 +14,7 @@ contextBridge.exposeInMainWorld("htv", {
   onRefreshShortcut: fn => ipcRenderer.on("htv:refresh-shortcut", () => fn()),
   getSettings: () => ipcRenderer.invoke("htv:get-settings"),
   setSettings: s => ipcRenderer.invoke("htv:set-settings", s),
+  getUpdate: () => ipcRenderer.invoke("htv:get-update"),
+  onUpdate: fn => ipcRenderer.on("htv:update", (_e, s) => fn(s)),
+  installUpdate: () => ipcRenderer.invoke("htv:install-update"),
 });

@@ -9,6 +9,7 @@ A desktop app for watching NHL streams listed on onhockey.tv, with its own playe
 - **Streams:** scrapes onhockey.tv's schedule. Every NHL / NHL Preseason link is checked in the background, dead links are hidden, and the list re-fetches every 5 minutes.
 - **Player:** grabs the HLS feed behind each embed and plays it in htv's own player: play/pause, volume, jump to live, quality, picture-in-picture and fullscreen. If a link dies, the player skips to the next working one. The site's original embed is still available, with ads blocked.
 - **Blocking:** ads are blocked in every session and popups everywhere; Ctrl+T/N/W do nothing.
+- **Updates:** the app checks GitHub Releases, downloads new versions in the background and shows **Restart to update** in the sidebar (the Windows installer, macOS and the Linux AppImage; the portable exe shows a download link instead).
 - **Live stats:** a score, clock, shots and goals panel with scorers and assists, plus `CGY-EDM 0-3` style labels. Data comes from the NHL's public web API (`api-web.nhle.com`).
 
 ## Development
@@ -96,7 +97,7 @@ npm version patch        # or minor / major: bumps package.json, commits, tags v
 git push --follow-tags
 ```
 
-The workflow builds Windows, macOS and Linux and uploads everything to a **draft** release. Review it on the Releases page, then press *Publish*.
+The workflow builds Windows, macOS and Linux and uploads everything to a **draft** release. Review it on the Releases page, then press *Publish*. Installed apps only see published releases, so publishing is what rolls the update out to them.
 
 ### macOS signing and notarization
 

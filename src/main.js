@@ -7,6 +7,7 @@ const scraper = require("./scraper");
 const checker = require("./checker");
 const proxy = require("./proxy");
 const stats = require("./stats");
+const updater = require("./updater");
 
 const MAIN_PARTITION = "persist:main";
 const BLOCKED_KEYS = ["t", "n", "w"]; // Ctrl(+Shift)+T/N/W
@@ -202,6 +203,8 @@ ipcMain.handle("htv:mark-failed", (_e, link) => { if (typeof link === "string") 
 ipcMain.handle("htv:open-external", (_e, link) => {
   if (typeof link === "string" && link) shell.openExternal("https://" + link.replace(/^https?:\/\//, ""));
 });
+ipcMain.handle("htv:get-update", () => updater.getState());
+ipcMain.handle("htv:install-update", () => updater.install());
 ipcMain.handle("htv:get-settings", () => ({
   mode: settings.mode,
   serverUrl: settings.serverUrl,
@@ -238,6 +241,7 @@ app.whenReady().then(async () => {
   checker.seed(readJson(dataFile("checks.json")));
   state.refreshing = true;
   createWindow();
+  updater.start(s => send("htv:update", s));
 
   await engine.setupAdblock([mainSes, extractSes]); // before any checks, so hidden loads are ad-free too
   send("htv:streams", await refresh());

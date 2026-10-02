@@ -22,6 +22,7 @@
   "type": "commonjs",
   "dependencies": {
     "@ghostery/adblocker-electron": "^2.18.2",
+    "electron-updater": "^6.8.9",
     "hls.js": "^1.7.3",
     "htmlparser2": "^12.0.0"
   },
@@ -34,6 +35,12 @@
   },
   "build": {
     "appId": "app.htv.viewer",
+    "publish": {
+      "provider": "github",
+      "owner": "mfan88",
+      "repo": "htv",
+      "releaseType": "draft"
+    },
     "productName": "htv",
     "files": [
       "src/**/*",
@@ -57,6 +64,12 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "universal"
           ]
