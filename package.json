@@ -1,7 +1,7 @@
 {
   "name": "htv",
   "productName": "htv",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "NHL stream viewer with built-in ad blocking",
   "main": "src/main.js",
   "scripts": {
