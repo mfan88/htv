@@ -1,7 +1,7 @@
 // htv server mode: runs the scraper and link checker with no window and serves the
-// results as JSON, so the desktop app can start from an up-to-date list. It also serves
-// a web player for phones (src/web/): the server extracts the stream and proxies it,
-// so the phone, or an Apple TV it AirPlays to, only ever loads a plain HLS stream.
+// results as JSON, so the desktop app can start from an up-to-date list. For the TV app
+// (and other players) it also extracts streams on demand and proxies them, so the
+// client only ever loads a plain HLS stream. It serves no web pages.
 //
 //   electron src/server.js        (in Docker: see Dockerfile / docker-compose.yml)
 //
@@ -108,32 +108,15 @@ async function summary() {
   };
 }
 
-/* ---------------- Web player ---------------- */
+/* ---------------- Stream proxy ---------------- */
 
-const WEB_DIR = path.join(__dirname, "web");
-const STATIC = {
-  "/": [path.join(WEB_DIR, "index.html"), "text/html; charset=utf-8"],
-  "/app.js": [path.join(WEB_DIR, "app.js"), "text/javascript; charset=utf-8"],
-  "/style.css": [path.join(WEB_DIR, "style.css"), "text/css; charset=utf-8"],
-  "/icon.png": [path.join(__dirname, "assets", "icon.png"), "image/png"],
-  // For browsers without native HLS; Safari (and AirPlay) plays the playlist directly.
-  "/hls.min.js": [require.resolve("hls.js/dist/hls.min.js"), "text/javascript; charset=utf-8"],
-};
-
-function sendStatic(res, [file, type]) {
-  fs.readFile(file, (err, body) => {
-    if (err) return sendJson(res, 404, { error: "not found" });
-    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-cache" });
-    res.end(body);
-  });
-}
-
-// Stream URLs carry no token: an Apple TV playing over AirPlay fetches them itself and
-// can't send one. Instead each URL is signed, so only URLs the server handed out work,
+// Stream URLs carry no token: players fetch playlists and segments themselves and
+// can't always send one (an Apple TV playing over AirPlay never does). Instead each
+// URL is signed, so only URLs the server handed out work,
 // and the proxy can't be used to fetch anything else.
 const SIGNING_KEY = crypto.randomBytes(32);
 const sign = (id, target) => crypto.createHmac("sha256", SIGNING_KEY).update(id + "\n" + target).digest("base64url").slice(0, 22);
-// Root-relative, so it works on whatever address the phone reached the server on.
+// Root-relative, so it works on whatever address the client reached the server on.
 const streamUrl = (id, target) => `/s/${id}/${sign(id, target)}?u=${encodeURIComponent(target)}`;
 
 async function serveStream(req, res, url) {
@@ -151,7 +134,7 @@ async function serveStream(req, res, url) {
   body.on("error", () => res.destroy()).pipe(res);
 }
 
-// Extract a link on demand (or reuse a capture checked moments ago) for the web player.
+// Extract a link on demand (or reuse a capture checked moments ago) for a player.
 async function play(req, res, url) {
   const link = url.searchParams.get("link") || "";
   if (!engine.nhlLinks(state.data).includes(link)) return sendJson(res, 404, { error: "unknown link" });
@@ -212,7 +195,6 @@ function startHttp() {
     const url = new URL(req.url, "http://localhost");
     if (req.method !== "GET" && req.method !== "HEAD") return sendJson(res, 405, { error: "method not allowed" });
     if (url.pathname === "/health") return sendJson(res, 200, { ok: true, version: VERSION });
-    if (STATIC[url.pathname]) return sendStatic(res, STATIC[url.pathname]);
     if (url.pathname.startsWith("/s/")) {
       return serveStream(req, res, url).catch(err => { log("stream error:", err.message); res.destroy(); });
     }

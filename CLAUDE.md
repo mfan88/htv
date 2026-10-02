@@ -7,7 +7,7 @@ Electron desktop app (Windows / macOS universal / Linux) for watching NHL stream
 | File | Role |
 |---|---|
 | `src/main.js` | Desktop main process: window (hidden title bar), IPC, settings, refresh loop (server first, local scrape fallback), on-disk caches |
-| `src/server.js` | Headless server mode: scrape every `HTV_REFRESH_MIN`, check links continuously, serve `GET /health` and `GET /api/streams` (Bearer `HTV_TOKEN`), plus the phone web player: `/api/play`, `/api/labels`, the signed stream proxy `/s/<ctx>/<sig>?u=` and static files from `src/web/` |
+| `src/server.js` | Headless server mode: scrape every `HTV_REFRESH_MIN`, check links continuously, serve `GET /health` and `GET /api/streams` (Bearer `HTV_TOKEN`), plus what the TV app needs: `/api/play` (extract on demand), `/api/labels`, `/api/tv-update`, `/api/summary` and the signed stream proxy `/s/<ctx>/<sig>?u=`. It serves no web pages (the owner wants the public domain API-only; an iOS app is planned) |
 | `src/engine.js` | Shared by both: Electron setup (`configure()` must run before `app.whenReady`), extract session, ad blocking, `extractVerified()`, `nhlLinks()` |
 | `src/scraper.js` | Fetches `https://onhockey.tv/schedule_table.php` (cp1251) and parses it with htmlparser2. Records: `{league, game, time, feed, name, channel, link}`, where `link` is the text after `np_stream400.php?channel=//` |
 | `src/extractor.js` | Loads an embed in two hidden, muted windows at once (onhockey's wrapper page and the bare embed) and captures the first `.m3u8` GET plus the player's request headers |
@@ -15,8 +15,7 @@ Electron desktop app (Windows / macOS universal / Linux) for watching NHL stream
 | `src/checker.js` | Queue of link checks (`setConcurrency`); `snapshot()`/`seed()` exchange `{link: {status, at}}` with disk caches and the server |
 | `src/stats.js` | NHL public API (`api-web.nhle.com/v1/score/now`): live stats panel and `CGY-EDM 1-3` labels. onhockey lists games "away - home" |
 | `src/renderer/` | UI: sidebar, hls.js player with custom controls, stats panel, server settings (⚙) |
-| `src/web/` | Phone web player served by server mode (not in the desktop build). Safari plays the proxied HLS natively so AirPlay hands the stream to an Apple TV; other browsers use hls.js |
-| `androidtv/` | Android TV app (Kotlin, Compose for TV, Media3 ExoPlayer), a client of server mode like `src/web/`. Built-in server from `androidtv/local.properties` (`htv.serverUrl`, `htv.token`, git-ignored) or `HTV_SERVER_URL`/`HTV_TOKEN` |
+| `androidtv/` | Android TV app (Kotlin, Compose for TV, Media3 ExoPlayer), a client of server mode's API. Built-in server from `androidtv/local.properties` (`htv.serverUrl`, `htv.token`, git-ignored) or `HTV_SERVER_URL`/`HTV_TOKEN` |
 | `Dockerfile`, `docker-compose.yml` | Server mode in Docker: Electron under `xvfb-run`, data in `/data` |
 | `.github/workflows/release.yml` | On `v*` tags: builds win/mac/linux and uploads a draft GitHub release. The Mac build signs and notarizes when the Developer ID secrets are set, otherwise it's ad-hoc signed |
 
@@ -50,7 +49,7 @@ Done and tested on Windows: the app, the release pipeline (v1.0.0 released; the 
 
 **Built-in server:** the app defaults to the server in `src/defaults.json` (`{serverUrl, token}`, git-ignored). The release workflow writes that file from the `HTV_SERVER_URL`/`HTV_TOKEN` secrets. Without it (dev runs), the app works locally unless a server is set in ⚙. ⚙ also has "Generate links on this computer" (`settings.mode = "local"`). The server token lives in `.env` (git-ignored). The server is public at `https://htv.fenna.tech` through Caddy on the host (`/etc/caddy/Caddyfile`, which also serves other sites; DNS on Cloudflare, DNS-only so video doesn't go through Cloudflare's proxy). It used to be on Tailscale Funnel; that's switched off. The token in the app is extractable by design.
 
-**Phone web player:** tested in a phone-sized Chromium window against server mode on macOS (list, scores, playback through the proxy, signed URLs rejecting tampering). Not yet tested on a real iPhone or with AirPlay to an Apple TV.
+**Phone web player:** removed (it lived in `src/web/`, see git history before it was deleted). It played the proxied HLS in a browser; the idea (native HLS playback so AirPlay hands the stream itself to an Apple TV) was never tested on a real iPhone, and applies to a native iOS app too.
 
 **Android TV app:** tested on a Google TV emulator (API 36) against local server mode: list, focus, playback, switching links, pause, Back, Settings, and the in-app update (`Updater.kt`, served from `<data>/androidtv/` by `/api/tv-update`) from one build to a newer one. Not yet tested on a real TV. Build with JDK 21 (`JAVA_HOME=.../temurin-21.jdk/...`); the SDK on the owner's Mac is at `/opt/homebrew/share/android-commandlinetools`, with an AVD named `htv_tv`. The emulator reaches the host at `10.0.2.2`, and `adb exec-out screencap -p` takes screenshots. Tested on the owner's Mi TV too (Android 14): list and live playback through `https://htv.fenna.tech`. Publish updates with `androidtv/publish.sh <ssh host>`.
 

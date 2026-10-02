@@ -44,22 +44,11 @@ In the app, the ⚙ next to Refresh can switch to **Generate links on this compu
 | `GET /api/summary` | flat numbers for dashboards: `status`, `uptimeSec`, `lastScrape`, `links`, `workingLinks`, `failedLinks`, `pendingLinks`, `liveGames`, `upcomingGames`, `finishedGames`, `gamesToday` (games from the NHL API) |
 | `GET /api/play?link=…` | extracts a listed NHL link and returns `{ ok, src }`, a proxied HLS URL |
 | `GET /api/labels` | `CGY-EDM 1-3` style score labels for the listed games |
-| `GET /s/…` | the stream proxy; URLs are signed by `/api/play`, so they need no token |
+| `GET /s/…` | the stream proxy; URLs are signed by `/api/play`, so players can fetch them without the token |
 | `GET /api/tv-update` | the Android TV build in `<data>/androidtv/`: `{ available, versionCode, versionName, url }` |
 | `GET /api/tv-update/apk` | that build's APK |
-| `GET /` | the phone web player (below); it asks for the token itself |
 
 Server settings are environment variables in `docker-compose.yml`: `HTV_TOKEN` (from `.env`), `HTV_CONCURRENCY` (default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787). To run it without Docker: `npx electron src/server.js`; on Linux without a display, use `xvfb-run -a`.
-
-## iPhone and AirPlay
-
-The server also serves a web player for phones at `/`. The server extracts each stream and proxies it (with its own ad blocking and popup blocking), so the phone only ever loads a plain HLS stream: there are no embed pages, ads or popups on the phone. Safari plays it natively, which means **AirPlay sends the stream itself to an Apple TV**, not a mirror of the phone's screen. The Apple TV then fetches the video from the server directly, and the phone works as a remote.
-
-Setup, once per phone: open `https://htv.fenna.tech/#token=<HTV_TOKEN>` in Safari. The page saves the token and removes it from the address bar. Then use Share → **Add to Home Screen**.
-
-- **Use an address the Apple TV can reach**, because it fetches the stream from whatever address the phone used. The public address or the server's LAN address work; its Tailscale `100.x` address doesn't, since the Apple TV isn't on the tailnet.
-- **Away from home**, the video comes over your home upload.
-- Android phones and desktop browsers can use the page too (through hls.js), just without AirPlay.
 
 ## Android TV
 
