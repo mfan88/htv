@@ -33,7 +33,7 @@ docker compose up -d --build
 docker compose logs -f          # watch links being checked
 ```
 
-Release builds use a built-in server by default: the release workflow writes the GitHub secrets `HTV_SERVER_URL` and `HTV_TOKEN` into the app. That token isn't secret (anyone can read it out of the app); it only keeps out random scanners. The server is published with Tailscale Funnel: `sudo tailscale funnel --bg --https=8443 http://127.0.0.1:8787`.
+Release builds use a built-in server by default: the release workflow writes the GitHub secrets `HTV_SERVER_URL` and `HTV_TOKEN` into the app. That token isn't secret (anyone can read it out of the app); it only keeps out random scanners. The server is published through Caddy on the server (a `reverse_proxy 127.0.0.1:8787` site with `flush_interval -1`, so streams aren't buffered), at `https://htv.fenna.tech`.
 
 In the app, the ⚙ next to Refresh can switch to **Generate links on this computer**, or point at a different server with its own token. The status line shows **via server** when it's working; if the server can't be reached, the app checks links itself.
 
@@ -55,10 +55,10 @@ Server settings are environment variables in `docker-compose.yml`: `HTV_TOKEN` (
 
 The server also serves a web player for phones at `/`. The server extracts each stream and proxies it (with its own ad blocking and popup blocking), so the phone only ever loads a plain HLS stream: there are no embed pages, ads or popups on the phone. Safari plays it natively, which means **AirPlay sends the stream itself to an Apple TV**, not a mirror of the phone's screen. The Apple TV then fetches the video from the server directly, and the phone works as a remote.
 
-Setup, once per phone: open `http://<server's LAN IP>:8787/#token=<HTV_TOKEN>` in Safari. The page saves the token and removes it from the address bar. Then use Share → **Add to Home Screen**.
+Setup, once per phone: open `https://htv.fenna.tech/#token=<HTV_TOKEN>` in Safari. The page saves the token and removes it from the address bar. Then use Share → **Add to Home Screen**.
 
-- **At home, use the server's LAN address**, not its Tailscale `100.x` one. The Apple TV fetches the stream from whatever address the phone used, and it isn't on the tailnet.
-- **Away from home, the Funnel URL works too**, but the video then comes over your home upload.
+- **Use an address the Apple TV can reach**, because it fetches the stream from whatever address the phone used. The public address or the server's LAN address work; its Tailscale `100.x` address doesn't, since the Apple TV isn't on the tailnet.
+- **Away from home**, the video comes over your home upload.
 - Android phones and desktop browsers can use the page too (through hls.js), just without AirPlay.
 
 ## Android TV
@@ -69,11 +69,11 @@ Build it (needs JDK 21 and the Android SDK; the version follows `package.json`):
 
 ```sh
 cd androidtv
-printf 'sdk.dir=/path/to/android/sdk\nhtv.serverUrl=http://192.168.1.20:8787\nhtv.token=<HTV_TOKEN>\n' > local.properties
+printf 'sdk.dir=/path/to/android/sdk\nhtv.serverUrl=https://htv.fenna.tech\nhtv.token=<HTV_TOKEN>\n' > local.properties
 ./gradlew assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ```
 
-`htv.serverUrl` and `htv.token` (or the `HTV_SERVER_URL` / `HTV_TOKEN` env vars) become the built-in server; you can also set one in the app's Settings. Install on the TV by turning on Developer options → Network debugging (or USB debugging), then:
+`htv.serverUrl` and `htv.token` (or the `HTV_SERVER_URL` / `HTV_TOKEN` env vars) become the built-in server; you can also set one in the app's Settings. Use the public address rather than a Tailscale one, so the TV doesn't depend on Tailscale staying logged in. Install on the TV by turning on Developer options → Network debugging (or USB debugging), then:
 
 ```sh
 adb connect <tv-ip>
@@ -82,14 +82,13 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 The APK is signed with the local debug key, so reinstalling a build from a different machine needs an uninstall first.
 
-**Updates without adb:** after the first install, publish new builds to the server and the app shows **Install update** in its header (it checks at startup and every 30 minutes). Copy the build into the server's data folder (`htv-data/` next to `docker-compose.yml`):
+**Updates without adb:** after the first install, publish new builds to the server and the app shows **Install update** in its header (it checks at startup and every 30 minutes):
 
 ```sh
-./gradlew assembleRelease
-scp app/build/outputs/apk/release/{app-release.apk,output-metadata.json} <server>:htv/htv-data/androidtv/
+androidtv/publish.sh <ssh host>          # e.g. mfan@zimaboard
 ```
 
-The first update asks you to allow installs from htv (Settings → allow, then press Install update again); after that each update is one confirmation. Android closes the app while it updates, so reopen it afterwards. Every build gets a higher version code (seconds since 2026), so any new build counts as an update. Updates must come from the same machine as the first install, because the signing key has to match.
+It builds the release APK and copies it into the server's `/data/androidtv/` with `docker cp` (Docker owns `htv-data/`, so a plain `scp` into it fails). The first update asks you to allow installs from htv (Settings → allow, then press Install update again); after that each update is one confirmation. Android closes the app while it updates, so reopen it afterwards. Every build gets a higher version code (seconds since 2026), so any new build counts as an update. Updates must come from the same machine as the first install, because the signing key has to match.
 
 ## Building locally
 

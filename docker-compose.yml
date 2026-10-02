@@ -1,5 +1,5 @@
 # Run on your home server:   docker compose up -d --build
-# Public via Tailscale Funnel: tailscale funnel --bg --https=8443 http://127.0.0.1:8787
+# Public via Caddy on the host: htv.fenna.tech { reverse_proxy 127.0.0.1:8787 { flush_interval -1 } }
 services:
   htv:
     build: .
