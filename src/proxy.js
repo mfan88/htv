@@ -97,6 +97,14 @@ function decorate(requestHeaders) {
   }
 }
 
+// Offset of the first MPEG-TS packet in the first KB of `buf` (sync bytes 188 apart), or -1.
+function tsStart(buf) {
+  for (let i = 0; i < Math.min(1024, buf.length - 376); i++) {
+    if (buf[i] === 0x47 && buf[i + 188] === 0x47 && buf[i + 376] === 0x47) return i;
+  }
+  return -1;
+}
+
 const CORS = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
 
 // The response for one proxied request of stream context `id`. Playlists are rewritten
@@ -126,6 +134,17 @@ async function respond(fetchSession, id, target, range, wrap) {
       });
     }
     return new Response(text, { status: res.status, headers: { ...CORS, "Content-Type": contentType } });
+  }
+
+  // Some mirrors wrap MPEG-TS segments in a fake image header (a WebP/PNG prefix) to dodge
+  // blockers. Browsers' players cope; ffmpeg doesn't, so cut the prefix off.
+  if (res.ok && !range && /^image\//i.test(contentType)) {
+    const body = Buffer.from(await res.arrayBuffer());
+    const at = tsStart(body);
+    if (at >= 0) {
+      return new Response(body.subarray(at), { status: 200, headers: { ...CORS, "Content-Type": "video/mp2t", "Content-Length": String(body.length - at) } });
+    }
+    return new Response(body, { status: 200, headers: { ...CORS, "Content-Type": contentType } });
   }
 
   const outHeaders = { ...CORS };
