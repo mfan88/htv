@@ -138,7 +138,7 @@ async function respond(fetchSession, id, target, range, wrap) {
 
   // Some mirrors wrap MPEG-TS segments in a fake image header (a WebP/PNG prefix) to dodge
   // blockers. Browsers' players cope; ffmpeg doesn't, so cut the prefix off.
-  if (res.ok && !range && /^image\//i.test(contentType)) {
+  if (res.ok && (!range || /^bytes=0-$/.test(range)) && /^image\//i.test(contentType)) {
     const body = Buffer.from(await res.arrayBuffer());
     const at = tsStart(body);
     if (at >= 0) {
