@@ -31,11 +31,8 @@ function games(data, statuses = {}) {
 
 // "CGY @ EDM · SN West" from the NHL API, else onhockey's own name. A feed other than
 // the home one is named too ("KONG (away feed)").
-function channelName(g, label) {
-  const game = label ? `${label.away} @ ${label.home}` : g.name;
-  const feed = /^home/i.test(g.feed || "") ? "" : ` (${g.feed})`;
-  return g.channel ? `${game} · ${g.channel}${feed}` : game;
-}
+const channelSuffix = g => (g.channel ? ` · ${g.channel}${/^home/i.test(g.feed || "") ? "" : ` (${g.feed})`}` : "");
+const channelName = (g, label) => (label ? `${label.away} @ ${label.home}` : g.name) + channelSuffix(g);
 
 // Games on or near the air: the links worth keeping captured.
 function hotLinks(data, now = Date.now()) {
@@ -90,7 +87,7 @@ function xmltv(list, labels, data, logo = () => null) {
     const label = labels[g.name];
     const start = startTime(g, label, data);
     if (start == null) continue;
-    const title = label ? `${label.awayName} at ${label.homeName}` : g.name;
+    const title = (label ? `${label.awayName} at ${label.homeName}` : g.name) + channelSuffix(g);
     const ch = `channel="htv-${g.id}"`;
     const icon = logo(label) ? `<icon src="${xml(logo(label))}"/>` : "";
     out.push(`  <programme start="${xmltvTime(start - 12 * HOUR)}" stop="${xmltvTime(start)}" ${ch}>` +
