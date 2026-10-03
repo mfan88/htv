@@ -25,6 +25,7 @@ const scraper = require("./scraper");
 const checker = require("./checker");
 const proxy = require("./proxy");
 const stats = require("./stats");
+const livetv = require("./livetv");
 
 const PORT = +(process.env.HTV_PORT || 8787);
 const HOST = process.env.HTV_HOST || "0.0.0.0";
@@ -116,8 +117,23 @@ async function summary() {
 // and the proxy can't be used to fetch anything else.
 const SIGNING_KEY = crypto.randomBytes(32);
 const sign = (id, target) => crypto.createHmac("sha256", SIGNING_KEY).update(id + "\n" + target).digest("base64url").slice(0, 22);
+// The path ends in a file name with the right extension: ffmpeg (Jellyfin) refuses HLS
+// segments whose URL doesn't end in a media extension. Upstream names are kept when they
+// are real media types; disguised ones (".png", none) get the usual type for their kind.
+const MEDIA_EXT = {
+  playlist: ["m3u8"],
+  segment: ["ts", "aac", "ac3", "eac3", "mp3", "m4a"],
+  fragment: ["m4s", "mp4", "m4a", "m4v"],
+  init: ["mp4", "m4s"],
+  key: ["key"],
+};
+function fileName(target, kind) {
+  const ext = /\.([a-z0-9]{1,5})$/i.exec(new URL(target).pathname)?.[1]?.toLowerCase();
+  return "s." + (MEDIA_EXT[kind]?.includes(ext) ? ext : MEDIA_EXT[kind]?.[0] || "bin");
+}
 // Root-relative, so it works on whatever address the client reached the server on.
-const streamUrl = (id, target) => `/s/${id}/${sign(id, target)}?u=${encodeURIComponent(target)}`;
+const streamUrl = (id, target, kind = "playlist") =>
+  `/s/${id}/${sign(id, target)}/${fileName(target, kind)}?u=${encodeURIComponent(target)}`;
 
 async function serveStream(req, res, url) {
   const [, , id, sig] = url.pathname.split("/");
@@ -126,7 +142,7 @@ async function serveStream(req, res, url) {
   if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return sendJson(res, 403, { error: "bad stream url" });
   }
-  const r = await proxy.respond(extractSes, id, target, req.headers.range, u => streamUrl(id, u));
+  const r = await proxy.respond(extractSes, id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
   res.writeHead(r.status, Object.fromEntries(r.headers));
   if (!r.body || req.method === "HEAD") return res.end();
   const body = Readable.fromWeb(r.body);
@@ -151,10 +167,69 @@ async function play(req, res, url) {
   sendJson(res, 200, { ok: true, src: streamUrl(capture.id, capture.url) });
 }
 
-async function labels(res) {
+/* ---------------- Jellyfin Live TV ---------------- */
+
+// "http://192.168.2.152:8787": whatever address the client reached us on.
+const baseUrl = req => `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host}`;
+
+async function nhlLabels() {
   const names = [...new Set((state.data?.streams || [])
     .filter(r => engine.NHL_LEAGUES.includes(r.league.toLowerCase())).map(r => r.game))];
-  try { sendJson(res, 200, await stats.labels(names)); } catch { sendJson(res, 200, {}); }
+  try { return await stats.labels(names); } catch { return {}; }
+}
+
+async function liveList(req, res, format) {
+  const list = livetv.games(state.data, checker.statuses());
+  const labels = await nhlLabels();
+  if (format === "m3u") {
+    res.writeHead(200, { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store" });
+    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN));
+  }
+  res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(livetv.xmltv(list, labels, state.data || {}));
+}
+
+// Extract up to a few links at once and keep the first that works; the rest are
+// cancelled. Dropping the request (Jellyfin giving up) cancels them all.
+async function firstWorking(links, res) {
+  const controllers = links.map(() => new AbortController());
+  res.on("close", () => { if (!res.writableFinished) controllers.forEach(c => c.abort()); });
+  try {
+    return await Promise.any(links.map(async (link, i) => {
+      const capture = await engine.extractVerified(link, { signal: controllers[i].signal });
+      if (controllers[i].signal.aborted) throw new Error("cancelled");
+      checker.record(link, capture ? "ok" : "fail", capture);
+      if (!capture) throw new Error("no stream");
+      return capture;
+    }));
+  } catch {
+    return null;
+  } finally {
+    controllers.forEach(c => c.abort());
+  }
+}
+
+// Jellyfin tuning in to a game's channel: redirect it to a working stream, preferring a
+// capture the background checks verified moments ago.
+async function live(req, res, url) {
+  const id = /^\/live\/([0-9a-f]+)\.m3u8$/.exec(url.pathname)?.[1];
+  const statuses = checker.statuses();
+  const game = livetv.games(state.data, statuses).find(g => g.id === id);
+  if (!game) return sendJson(res, 404, { error: "unknown channel" });
+  let capture = game.links.map(l => checker.freshCapture(l)).find(c => c && proxy.hasContext(c.id)) || null;
+  if (!capture) {
+    const alive = game.links.filter(l => statuses[l] !== "fail");
+    capture = await firstWorking((alive.length ? alive : game.links).slice(0, 3), res);
+  }
+  if (res.destroyed) return;
+  log(`live ${capture ? "ok  " : "fail"} ${game.name}`);
+  if (!capture) return sendJson(res, 503, { error: "no working stream for this game right now" });
+  res.writeHead(302, { Location: baseUrl(req) + streamUrl(capture.id, capture.url), "Cache-Control": "no-store" });
+  res.end();
+}
+
+async function labels(res) {
+  sendJson(res, 200, await nhlLabels());
 }
 
 // Android TV app updates. Copy app-release.apk and output-metadata.json from
@@ -215,6 +290,11 @@ function startHttp() {
     }
     if (url.pathname === "/api/labels") return labels(res);
     if (url.pathname === "/api/tv-update") return tvUpdate(res);
+    if (url.pathname === "/api/m3u") return liveList(req, res, "m3u");
+    if (url.pathname === "/api/xmltv") return liveList(req, res, "xmltv");
+    if (url.pathname.startsWith("/live/")) {
+      return live(req, res, url).catch(err => { if (!res.headersSent) sendJson(res, 500, { error: err.message }); });
+    }
     if (url.pathname === "/api/tv-update/apk") return tvApk(res);
     sendJson(res, 404, { error: "not found" });
   });

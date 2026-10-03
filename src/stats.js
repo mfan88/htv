@@ -47,6 +47,8 @@ async function scoreboard() {
 }
 
 const text = v => (v && typeof v === "object" ? v.default : v) || "";
+// "Flames": the scoreboard usually has only the nickname (with the city when it has one).
+const fullName = t => [text(t.placeName), text(t.name)].filter(Boolean).join(" ") || t.abbrev;
 
 function simplify(g) {
   const team = t => ({ abbrev: t.abbrev, name: text(t.name), score: t.score ?? null, sog: t.sog ?? null, logo: t.logo || null });
@@ -93,7 +95,8 @@ async function forGame(gameName) {
 }
 
 // Short scoreboard labels for many onhockey game names at once:
-// { "Calgary - Edmonton Oilers": { away: "CGY", home: "EDM", awayScore: 0, homeScore: 3, state: "LIVE" } }
+// { "Calgary - Edmonton Oilers": { away: "CGY", home: "EDM", awayScore: 0, homeScore: 3, state: "LIVE",
+//   awayName: "Flames", homeName: "Oilers", start: "2026-10-03T01:00:00Z" } }
 async function labels(gameNames) {
   const games = (await scoreboard()).games || [];
   const out = {};
@@ -107,6 +110,9 @@ async function labels(gameNames) {
       awayScore: started ? g.awayTeam.score ?? null : null,
       homeScore: started ? g.homeTeam.score ?? null : null,
       state: g.gameState,
+      awayName: fullName(g.awayTeam),
+      homeName: fullName(g.homeTeam),
+      start: g.startTimeUTC || null,
     };
   }
   return out;

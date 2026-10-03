@@ -37,16 +37,21 @@ function proxify(id, url) {
   return `${SCHEME}://s/${id}?u=${encodeURIComponent(url)}`;
 }
 
-// `wrap` turns an absolute upstream URL into the URL the player should request.
+// `wrap(url, kind)` turns an absolute upstream URL into the URL the player should
+// request. kind is what the URL is: "playlist", "segment" (MPEG-TS style), "fragment"
+// (fMP4), "init" (an fMP4 init segment) or "key".
 function rewritePlaylist(text, baseUrl, wrap) {
-  const abs = u => {
-    try { return wrap(new URL(u, baseUrl).href); } catch { return u; }
+  const master = text.includes("#EXT-X-STREAM-INF");
+  const segment = text.includes("#EXT-X-MAP") ? "fragment" : "segment";
+  const abs = (u, kind) => {
+    try { return wrap(new URL(u, baseUrl).href, kind); } catch { return u; }
   };
+  const tagKind = t => (t.startsWith("#EXT-X-MAP") ? "init" : /^#EXT-X-(SESSION-)?KEY/.test(t) ? "key" : "playlist");
   return text.split(/\r?\n/).map(line => {
     const t = line.trim();
     if (!t) return line;
-    if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_, u) => `URI="${abs(u)}"`);
-    return abs(t);
+    if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_, u) => `URI="${abs(u, tagKind(t))}"`);
+    return abs(t, master ? "playlist" : segment);
   }).join("\n");
 }
 

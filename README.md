@@ -45,11 +45,25 @@ In the app, the ⚙ next to Refresh can switch to **Generate links on this compu
 | `GET /api/summary` | flat numbers for dashboards: `status`, `uptimeSec`, `lastScrape`, `links`, `workingLinks`, `failedLinks`, `pendingLinks`, `liveGames`, `upcomingGames`, `finishedGames`, `gamesToday` (games from the NHL API) |
 | `GET /api/play?link=…` | extracts a listed NHL link and returns `{ ok, src }`, a proxied HLS URL |
 | `GET /api/labels` | `CGY-EDM 1-3` style score labels for the listed games |
+| `GET /api/m3u`, `/api/xmltv` | Jellyfin Live TV: a channel list (one channel per NHL game) and its guide (below) |
+| `GET /live/<channel>.m3u8` | tunes a channel: redirects to a working stream for that game |
 | `GET /s/…` | the stream proxy; URLs are signed by `/api/play`, so players can fetch them without the token |
 | `GET /api/tv-update` | the Android TV build in `<data>/androidtv/`: `{ available, versionCode, versionName, url }` |
 | `GET /api/tv-update/apk` | that build's APK |
 
 Server settings are environment variables in `docker-compose.yml`: `HTV_TOKEN` (from `.env`), `HTV_CONCURRENCY` (default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787). To run it without Docker: `npx electron src/server.js`; on Linux without a display, use `xvfb-run -a`.
+
+## Jellyfin Live TV
+
+The server can feed Jellyfin's Live TV, so every Jellyfin app (Swiftfin or Infuse on Apple TV and iPhone, Android TV, the web) can watch the games. Each NHL game on the schedule is a channel, named like `CHI @ BUF`, with a guide entry at its start time. Tuning a channel makes the server pick a working link for that game, so the first few seconds can take a while when no link was verified in the last minute.
+
+In Jellyfin: **Dashboard → Live TV**.
+
+1. **Tuner devices → +**: type **M3U Tuner**, file or URL `http://<server>:8787/api/m3u?token=<HTV_TOKEN>`.
+2. **TV guide data providers → + → XMLTV**: file or URL `http://<server>:8787/api/xmltv?token=<HTV_TOKEN>`.
+3. In **Scheduled tasks → Refresh Guide**, set it to run every few hours: the channel list changes as games are added each day.
+
+`<server>` must be an address the Jellyfin container can reach, e.g. the host's LAN IP. The channel URLs in the list use whatever address Jellyfin fetched it from. The streams are mostly H.264 + AAC, which Jellyfin can pass through without transcoding.
 
 ## Android TV
 
