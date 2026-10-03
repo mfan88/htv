@@ -182,15 +182,34 @@ async function nhlLabels() {
   try { return await stats.labels(names); } catch { return {}; }
 }
 
+// Thumbnails: <logos>/AWAY_vs_HOME.png, one per matchup. Served without a token because
+// Jellyfin fetches them itself; the strict name check keeps it to files in that folder.
+const logosDir = () => process.env.HTV_LOGOS || path.join(app.getPath("userData"), "logos");
+const logoFile = label => (label?.away && label?.home ? `${label.away}_vs_${label.home}.png` : null);
+const logoUrl = (req, label) => {
+  const f = logoFile(label);
+  return f && fs.existsSync(path.join(logosDir(), f)) ? `${baseUrl(req)}/logo/${f}` : null;
+};
+
+function serveLogo(res, name) {
+  if (!/^[A-Z]{2,4}_vs_[A-Z]{2,4}\.png$/.test(name)) return sendJson(res, 404, { error: "not found" });
+  const file = path.join(logosDir(), name);
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) return sendJson(res, 404, { error: "not found" });
+    res.writeHead(200, { "Content-Type": "image/png", "Content-Length": st.size, "Cache-Control": "public, max-age=86400" });
+    fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
+  });
+}
+
 async function liveList(req, res, format) {
   const list = livetv.games(state.data, checker.statuses());
   const labels = await nhlLabels();
   if (format === "m3u") {
     res.writeHead(200, { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store" });
-    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN));
+    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN, l => logoUrl(req, l)));
   }
   res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" });
-  res.end(livetv.xmltv(list, labels, state.data || {}));
+  res.end(livetv.xmltv(list, labels, state.data || {}, l => logoUrl(req, l)));
 }
 
 // Extract up to a few links at once and keep the first that works; the rest are
@@ -349,6 +368,7 @@ function startHttp() {
     const url = new URL(req.url, "http://localhost");
     if (req.method !== "GET" && req.method !== "HEAD") return sendJson(res, 405, { error: "method not allowed" });
     if (url.pathname === "/health") return sendJson(res, 200, { ok: true, version: VERSION });
+    if (url.pathname.startsWith("/logo/")) return serveLogo(res, url.pathname.slice(6));
     if (url.pathname.startsWith("/s/")) {
       return serveStream(req, res, url).catch(err => { log("stream error:", err.message); res.destroy(); });
     }

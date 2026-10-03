@@ -62,12 +62,14 @@ function startTime(g, label, data) {
   return t;
 }
 
-function m3u(list, labels, base, token) {
+// `logo(label)` is the thumbnail URL for a game's NHL label, or null.
+function m3u(list, labels, base, token, logo = () => null) {
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   const lines = ["#EXTM3U"];
   list.forEach((g, i) => {
     const name = channelName(g, labels[g.name]).replace(/[",]/g, " ");
-    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}" group-title="NHL",${name}`);
+    const icon = logo(labels[g.name]);
+    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}"${icon ? ` tvg-logo="${icon}"` : ""} group-title="NHL",${name}`);
     lines.push(`${base}/live/${g.id}.m3u8${q}`);
   });
   return lines.join("\n") + "\n";
@@ -78,10 +80,11 @@ const xmltvTime = ms => new Date(ms).toISOString().replace(/[-:T]/g, "").slice(0
 
 // Each channel gets the game itself plus a "starting soon" block before it, so the
 // guide isn't empty while waiting for puck drop.
-function xmltv(list, labels, data) {
+function xmltv(list, labels, data, logo = () => null) {
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="htv">'];
   for (const g of list) {
-    out.push(`  <channel id="htv-${g.id}"><display-name>${xml(channelName(g, labels[g.name]))}</display-name></channel>`);
+    const icon = logo(labels[g.name]);
+    out.push(`  <channel id="htv-${g.id}"><display-name>${xml(channelName(g, labels[g.name]))}</display-name>${icon ? `<icon src="${xml(icon)}"/>` : ""}</channel>`);
   }
   for (const g of list) {
     const label = labels[g.name];
@@ -89,11 +92,12 @@ function xmltv(list, labels, data) {
     if (start == null) continue;
     const title = label ? `${label.awayName} at ${label.homeName}` : g.name;
     const ch = `channel="htv-${g.id}"`;
+    const icon = logo(label) ? `<icon src="${xml(logo(label))}"/>` : "";
     out.push(`  <programme start="${xmltvTime(start - 12 * HOUR)}" stop="${xmltvTime(start)}" ${ch}>` +
-      `<title>${xml(title)} (starting soon)</title><category>Sports</category></programme>`);
+      `<title>${xml(title)} (starting soon)</title><category>Sports</category>${icon}</programme>`);
     out.push(`  <programme start="${xmltvTime(start)}" stop="${xmltvTime(start + GAME_MS)}" ${ch}>` +
       `<title>${xml(title)}</title><desc>${xml(`${g.league}: ${g.name}`)}</desc>` +
-      `<category>Sports</category><category>Sports event</category></programme>`);
+      `<category>Sports</category><category>Sports event</category>${icon}</programme>`);
   }
   out.push("</tv>");
   return out.join("\n") + "\n";

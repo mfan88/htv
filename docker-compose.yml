@@ -14,5 +14,6 @@ services:
       HTV_CONCURRENCY: 3      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
     volumes:
+      - ${HTV_LOGOS:-./htv-data/logos}:/logos:ro   # AWAY_vs_HOME.png thumbnails (set HTV_LOGOS in .env to use another folder)
       - ./htv-data:/data      # caches (schedule, ad-block filters)
     shm_size: 512m            # Chromium needs more shared memory than Docker's 64 MB default
