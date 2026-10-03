@@ -57,7 +57,7 @@ async function refresh() {
     log("scrape failed:", state.error);
   }
   const links = engine.nhlLinks(state.data);
-  checker.check(links);
+  checker.check(links, { hot: livetv.hotLinks(state.data) });
   log(`schedule: ${state.data?.streams?.length ?? 0} links, ${links.length} NHL`);
 }
 
@@ -142,7 +142,11 @@ async function serveStream(req, res, url) {
   if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return sendJson(res, 403, { error: "bad stream url" });
   }
-  const r = await proxy.respond(extractSes, id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
+  const get = () => proxy.respond(extractSes, id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
+  // Upstream hiccups with a lone 5xx now and then; one retry saves the player from erroring out.
+  let r = await get();
+  if (r.status >= 500) r = await get();
+  if (r.status >= 400 && r.status !== 416) { log(`stream ${r.status} ${target.slice(0, 90)}`); markDown(id); }
   res.writeHead(r.status, Object.fromEntries(r.headers));
   if (!r.body || req.method === "HEAD") return res.end();
   const body = Readable.fromWeb(r.body);
@@ -209,23 +213,98 @@ async function firstWorking(links, res) {
   }
 }
 
-// Jellyfin tuning in to a game's channel: redirect it to a working stream, preferring a
-// capture the background checks verified moments ago.
+// The mirror each channel is playing right now. Jellyfin's ffmpeg polls /live/<id>.m3u8
+// for the whole viewing, so the server can swap a dead mirror for another one between two
+// polls and the player never sees it. Playlist sequence numbers keep counting across a swap.
+const current = new Map(); // channel id -> { link, capture, offset, end }
+const captureLink = new Map(); // capture id -> link, to blame the right one for a failed segment
+
+// A mirror's playlist as one media playlist (the best variant of a master), or null.
+async function livePlaylist(capture) {
+  const wrap = (u, kind) => streamUrl(capture.id, u, kind);
+  const fetchText = async target => {
+    const r = await proxy.respond(extractSes, capture.id, target, null, wrap);
+    const text = r.ok ? await r.text() : "";
+    return text.startsWith("#EXTM3U") ? text : null;
+  };
+  let text = await fetchText(capture.url);
+  if (text?.includes("#EXT-X-STREAM-INF")) {
+    const lines = text.split(/\r?\n/);
+    let best = null, bw = -1;
+    lines.forEach((l, i) => {
+      const b = l.startsWith("#EXT-X-STREAM-INF") ? +/BANDWIDTH=(\d+)/.exec(l)?.[1] || 0 : -1;
+      if (b > bw && lines[i + 1]) { bw = b; best = lines[i + 1]; }
+    });
+    const target = best && new URL(best, "http://x").searchParams.get("u");
+    text = target ? await fetchText(target) : null;
+  }
+  return text;
+}
+
+// Renumber a mirror's playlist so sequence numbers never go backwards for the channel.
+function renumber(entry, text, switched) {
+  const seq = +/#EXT-X-MEDIA-SEQUENCE:(\d+)/.exec(text)?.[1] || 0;
+  if (switched) entry.offset = Math.max(0, entry.end - seq);
+  const count = (text.match(/^#EXTINF/gm) || []).length;
+  entry.end = Math.max(entry.end, seq + entry.offset + count);
+  let out = text.replace(/#EXT-X-MEDIA-SEQUENCE:\d+\s*/, "");
+  out = out.replace(/(#EXT-X-TARGETDURATION:\d+)/, `$1\n#EXT-X-MEDIA-SEQUENCE:${seq + entry.offset}`);
+  return switched ? out.replace(/^#EXTINF/m, "#EXT-X-DISCONTINUITY\n#EXTINF") : out;
+}
+
+// A stream that fails (playlist or segment) is dropped from its channel; the next poll picks another mirror.
+function markDown(id) {
+  const link = captureLink.get(id);
+  if (!link) return;
+  checker.record(link, "fail");
+  for (const [ch, e] of current) if (e.capture.id === id) { current.delete(ch); log(`down ${link}`); }
+}
+
+// Jellyfin tuning in to a channel (a feed of a game) or polling it: serve the playlist of a
+// working mirror, preferring the one already playing, then captures the background checks
+// took, then a fresh extraction.
 async function live(req, res, url) {
   const id = /^\/live\/([0-9a-f]+)\.m3u8$/.exec(url.pathname)?.[1];
   const statuses = checker.statuses();
   const game = livetv.games(state.data, statuses).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
-  let capture = game.links.map(l => checker.freshCapture(l)).find(c => c && proxy.hasContext(c.id)) || null;
-  if (!capture) {
-    const alive = game.links.filter(l => statuses[l] !== "fail");
-    capture = await firstWorking((alive.length ? alive : game.links).slice(0, 3), res);
+
+  let text = null, entry = current.get(id), switched = false;
+  if (entry) {
+    text = await livePlaylist(entry.capture).catch(() => null);
+    if (!text) markDown(entry.capture.id);
+  }
+  if (!text) {
+    switched = !!entry;
+    const prev = entry?.end ?? 0;
+    const tried = new Set(entry ? [entry.link] : []);
+    const adopt = async (link, capture) => {
+      tried.add(link);
+      captureLink.set(capture.id, link);
+      if (captureLink.size > 500) captureLink.delete(captureLink.keys().next().value);
+      const t = await livePlaylist(capture).catch(() => null);
+      if (!t) { checker.record(link, "fail"); return false; }
+      entry = { link, capture, offset: 0, end: prev };
+      current.set(id, entry);
+      text = t;
+      return true;
+    };
+    for (const link of game.links) {
+      const capture = tried.has(link) ? null : checker.recentCapture(link);
+      if (capture && proxy.hasContext(capture.id) && await adopt(link, capture)) break;
+    }
+    if (!text) {
+      const rest = game.links.filter(l => !tried.has(l) && statuses[l] !== "fail");
+      const links = (rest.length ? rest : game.links.filter(l => !tried.has(l))).slice(0, 3);
+      const capture = await firstWorking(links, res);
+      if (!res.destroyed && capture) await adopt(links.find(l => checker.recentCapture(l)?.id === capture.id) || links[0], capture);
+    }
   }
   if (res.destroyed) return;
-  log(`live ${capture ? "ok  " : "fail"} ${game.name}`);
-  if (!capture) return sendJson(res, 503, { error: "no working stream for this game right now" });
-  res.writeHead(302, { Location: baseUrl(req) + streamUrl(capture.id, capture.url), "Cache-Control": "no-store" });
-  res.end();
+  log(`live ${text ? "ok  " : "fail"} ${game.name} · ${game.channel}${switched && text ? " (switched mirror)" : ""}`);
+  if (!text) return sendJson(res, 503, { error: "no working stream for this channel right now" });
+  res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" });
+  res.end(renumber(entry, text, switched));
 }
 
 async function labels(res) {

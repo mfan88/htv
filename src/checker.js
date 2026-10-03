@@ -2,7 +2,9 @@
 // time, so the UI can hide dead links and start verified ones instantly.
 
 const RECHECK_MS = 10 * 60 * 1000; // links often come alive at puck drop
+const HOT_RECHECK_MS = 3 * 60 * 1000; // games on or about to start: keep captures warm
 const FRESH_CAPTURE_MS = 60 * 1000; // stream tokens expire; reuse captures only briefly
+const RECENT_CAPTURE_MS = 15 * 60 * 1000; // for callers that probe the capture before trusting it
 
 const results = new Map(); // link -> { status: "checking" | "ok" | "fail", capture, at }
 let queue = [];
@@ -30,7 +32,9 @@ function pump() {
 
 // Queue every link that has never been checked or, unless `recheck` is false, whose
 // result is stale. Links no longer listed are dropped.
-function check(links, { recheck = true } = {}) {
+// `hot` links (a Set) are rechecked sooner and go first. Concurrency stays the same, so
+// keeping them warm doesn't add load, it only reorders it.
+function check(links, { recheck = true, hot = new Set() } = {}) {
   const listed = new Set(links);
   queue = queue.filter(l => listed.has(l));
   for (const l of [...results.keys()]) if (!listed.has(l)) results.delete(l);
@@ -38,8 +42,10 @@ function check(links, { recheck = true } = {}) {
   for (const link of listed) {
     const r = results.get(link);
     if (queue.includes(link) || r?.status === "checking") continue;
-    if (!r || (recheck && now - r.at > RECHECK_MS)) queue.push(link);
+    const stale = now - (r?.at ?? 0) > (hot.has(link) ? HOT_RECHECK_MS : RECHECK_MS);
+    if (!r || (recheck && stale)) queue.push(link);
   }
+  queue.sort((a, b) => hot.has(b) - hot.has(a));
   pump();
 }
 
@@ -47,6 +53,12 @@ function check(links, { recheck = true } = {}) {
 function freshCapture(link) {
   const r = results.get(link);
   return r?.status === "ok" && r.capture && Date.now() - r.at < FRESH_CAPTURE_MS ? r.capture : null;
+}
+
+// The last good capture if it's recent; its token may still have lapsed, so probe it.
+function recentCapture(link) {
+  const r = results.get(link);
+  return r?.status === "ok" && r.capture && Date.now() - r.at < RECENT_CAPTURE_MS ? r.capture : null;
 }
 
 function statuses() {
@@ -77,6 +89,7 @@ module.exports = {
   setConcurrency(n) { concurrency = Math.max(1, n | 0); pump(); },
   check,
   freshCapture,
+  recentCapture,
   statuses,
   snapshot,
   seed,

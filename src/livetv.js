@@ -8,16 +8,19 @@ const { NHL_LEAGUES } = require("./engine");
 const GAME_MS = 3.5 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
-// NHL games in schedule order: { id, league, time, name, links }, links best first.
-// The id only depends on the game, so a channel keeps it across scrapes.
+// One channel per game and feed/channel pair ("SN West", "NHL Network"), in schedule
+// order: { id, gameId, league, time, name, feed, channel, links }. links are that
+// channel's mirrors, best first. Ids only depend on the game and channel, so a channel
+// keeps its id across scrapes.
 function games(data, statuses = {}) {
   const map = new Map();
   for (const r of data?.streams || []) {
     if (!NHL_LEAGUES.includes(r.league.toLowerCase())) continue;
-    const key = `${r.league}|${r.time}|${r.game}`;
+    const gameKey = `${r.league}|${r.time}|${r.game}`;
+    const key = `${gameKey}|${r.feed}|${r.channel}`;
     if (!map.has(key)) {
-      const id = crypto.createHash("sha1").update(key).digest("hex").slice(0, 10);
-      map.set(key, { id, league: r.league, time: r.time, name: r.game, links: [] });
+      const hash = k => crypto.createHash("sha1").update(k).digest("hex").slice(0, 10);
+      map.set(key, { id: hash(key), gameId: hash(gameKey), league: r.league, time: r.time, name: r.game, feed: r.feed, channel: r.channel, links: [] });
     }
     const g = map.get(key);
     if (!g.links.includes(r.link)) g.links.push(r.link);
@@ -26,8 +29,24 @@ function games(data, statuses = {}) {
   return [...map.values()].map(g => ({ ...g, links: [...g.links].sort((a, b) => rank(a) - rank(b)) }));
 }
 
-// "CGY @ EDM" from the NHL API, else onhockey's own name.
-const channelName = (g, label) => (label ? `${label.away} @ ${label.home}` : g.name);
+// "CGY @ EDM · SN West" from the NHL API, else onhockey's own name. A feed other than
+// the home one is named too ("KONG (away feed)").
+function channelName(g, label) {
+  const game = label ? `${label.away} @ ${label.home}` : g.name;
+  const feed = /^home/i.test(g.feed || "") ? "" : ` (${g.feed})`;
+  return g.channel ? `${game} · ${g.channel}${feed}` : game;
+}
+
+// Games on or near the air: the links worth keeping captured.
+function hotLinks(data, now = Date.now()) {
+  const hot = new Set();
+  for (const g of games(data)) {
+    const start = startTime(g, null, data);
+    if (start == null || now < start - 3 * HOUR || now > start + GAME_MS + HOUR) continue;
+    g.links.forEach(l => hot.add(l));
+  }
+  return hot;
+}
 
 // When a game starts (ms): the NHL API's time, else onhockey's "HH:MM" (in its own
 // UTC offset, on the day of the scrape; a time long past means tomorrow).
@@ -80,4 +99,4 @@ function xmltv(list, labels, data) {
   return out.join("\n") + "\n";
 }
 
-module.exports = { games, m3u, xmltv };
+module.exports = { games, m3u, xmltv, hotLinks };
