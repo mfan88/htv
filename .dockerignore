@@ -1,8 +1,7 @@
 node_modules
-dist
 .git
-.github
-build
 htv-data
 *.md
-src/defaults.json
+CLAUDE.md
+Dockerfile
+docker-compose.yml

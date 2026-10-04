@@ -25,7 +25,7 @@ async function launch() {
   const context = await browser.newContext({ userAgent, viewport: { width: 1280, height: 720 } });
   let blocker = null;
   try {
-    const cache = path.join(dataDir, "adblock-pw.bin");
+    const cache = path.join(dataDir, "adblock-engine.bin");
     blocker = await PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch, {
       path: cache,
       read: fs.promises.readFile,

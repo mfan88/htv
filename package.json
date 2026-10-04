@@ -1,90 +1,26 @@
 {
   "name": "htv",
-  "productName": "htv",
   "version": "1.0.5",
-  "description": "NHL stream viewer with built-in ad blocking",
-  "main": "src/main.js",
+  "description": "onhockey.tv scraper and Jellyfin Live TV tuner for NHL games",
+  "main": "src/server.js",
   "scripts": {
-    "start": "electron .",
-    "scrape": "node src/scraper.js",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "start": "node src/server.js",
+    "scrape": "node src/scraper.js"
   },
   "keywords": [
     "hockey",
     "nhl",
-    "electron"
+    "jellyfin"
   ],
   "author": "Marcus Fan",
   "license": "UNLICENSED",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
-    "@ghostery/adblocker-electron": "^2.18.2",
-    "electron-updater": "^6.8.9",
-    "hls.js": "^1.7.3",
-    "htmlparser2": "^12.0.0"
-  },
-  "devDependencies": {
-    "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
-  },
-  "allowScripts": {
-    "electron-winstaller@5.4.0": true
-  },
-  "build": {
-    "appId": "app.htv.viewer",
-    "publish": {
-      "provider": "github",
-      "owner": "mfan88",
-      "repo": "htv",
-      "releaseType": "draft"
-    },
-    "productName": "htv",
-    "files": [
-      "src/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "nsis": {
-      "oneClick": true,
-      "shortcutName": "htv",
-      "artifactName": "htv-setup-${version}.exe"
-    },
-    "portable": {
-      "artifactName": "htv-portable-${version}.exe"
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "universal"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "universal"
-          ]
-        }
-      ],
-      "category": "public.app-category.sports",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false
-    },
-    "linux": {
-      "target": [
-        "AppImage"
-      ],
-      "category": "Video"
-    }
-  },
-  "private": true
+    "@ghostery/adblocker-playwright": "^2.18.2",
+    "htmlparser2": "^12.0.0",
+    "playwright-core": "^1.63.0"
+  }
 }

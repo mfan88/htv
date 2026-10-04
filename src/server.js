@@ -1,15 +1,14 @@
-// htv server mode: runs the scraper and link checker with no window and serves the
-// results as JSON, so the desktop app can start from an up-to-date list. For the TV app
-// (and other players) it also extracts streams on demand and proxies them, so the
-// client only ever loads a plain HLS stream. It serves no web pages.
+// htv server: scrapes onhockey.tv, checks every NHL link with headless Chromium around the
+// clock, and serves the results as a Jellyfin Live TV tuner (M3U + XMLTV, one channel per
+// feed of each game) plus the stream proxy those channels play through. No web pages.
 //
-//   electron src/server.js        (in Docker: see Dockerfile / docker-compose.yml)
+//   node src/server.js        (in Docker: see Dockerfile / docker-compose.yml)
 //
 // Environment:
 //   HTV_PORT         port to listen on (default 8787)
 //   HTV_HOST         address to bind (default 0.0.0.0)
 //   HTV_TOKEN        if set, requests need "Authorization: Bearer <token>" or ?token=<token>
-//   HTV_DATA         data directory for caches (default: Electron's userData)
+//   HTV_DATA         data directory for caches (default ./htv-data)
 //   HTV_CONCURRENCY  links checked at once (default 3)
 //   HTV_REFRESH_MIN  minutes between schedule scrapes (default 5)
 
@@ -18,7 +17,6 @@ const fs = require("fs");
 const http = require("http");
 const crypto = require("crypto");
 const { Readable } = require("stream");
-const { app } = require("electron");
 
 const engine = require("./engine");
 const scraper = require("./scraper");
@@ -33,16 +31,15 @@ const TOKEN = process.env.HTV_TOKEN || "";
 const REFRESH_MS = +(process.env.HTV_REFRESH_MIN || 5) * 60 * 1000;
 const VERSION = require("../package.json").version;
 
-if (process.env.HTV_DATA) app.setPath("userData", path.resolve(process.env.HTV_DATA));
-engine.configure();
-app.disableHardwareAcceleration();
-// Hidden windows open and close constantly; never quit because none are left.
-app.on("window-all-closed", () => {});
+const DATA = path.resolve(process.env.HTV_DATA || "htv-data");
+fs.mkdirSync(DATA, { recursive: true });
+// A stray rejection from a page or socket must not take the server down.
+process.on("unhandledRejection", err => console.error("unhandled rejection:", err));
+process.on("uncaughtException", err => console.error("uncaught exception:", err));
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const state = { data: null, error: null, scrapedAt: null, startedAt: new Date().toISOString() };
-let extractSes = null;
-const streamsFile = () => path.join(app.getPath("userData"), "streams.json");
+const streamsFile = () => path.join(DATA, "streams.json");
 
 async function refresh() {
   try {
@@ -142,7 +139,7 @@ async function serveStream(req, res, url) {
   if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return sendJson(res, 403, { error: "bad stream url" });
   }
-  const get = () => proxy.respond(extractSes, id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
+  const get = async () => proxy.respond(await engine.fetcher(), id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
   // Upstream hiccups with a lone 5xx now and then; one retry saves the player from erroring out.
   let r = await get();
   if (r.status >= 500) r = await get();
@@ -152,23 +149,6 @@ async function serveStream(req, res, url) {
   const body = Readable.fromWeb(r.body);
   res.on("close", () => body.destroy());
   body.on("error", () => res.destroy()).pipe(res);
-}
-
-// Extract a link on demand (or reuse a capture checked moments ago) for a player.
-async function play(req, res, url) {
-  const link = url.searchParams.get("link") || "";
-  if (!engine.nhlLinks(state.data).includes(link)) return sendJson(res, 404, { error: "unknown link" });
-  const controller = new AbortController();
-  res.on("close", () => { if (!res.writableFinished) controller.abort(); });
-  let capture = checker.freshCapture(link);
-  if (!capture || !proxy.hasContext(capture.id)) {
-    capture = await engine.extractVerified(link, { signal: controller.signal });
-    if (controller.signal.aborted) return;
-    checker.record(link, capture ? "ok" : "fail", capture);
-    log(`play ${capture ? "ok  " : "fail"} ${link}`);
-  }
-  if (!capture) return sendJson(res, 200, { ok: false, error: "No playable stream found in this link." });
-  sendJson(res, 200, { ok: true, src: streamUrl(capture.id, capture.url) });
 }
 
 /* ---------------- Jellyfin Live TV ---------------- */
@@ -184,7 +164,7 @@ async function nhlLabels() {
 
 // Thumbnails: <logos>/AWAY_vs_HOME.png, one per matchup. Served without a token because
 // Jellyfin fetches them itself; the strict name check keeps it to files in that folder.
-const logosDir = () => process.env.HTV_LOGOS || path.join(app.getPath("userData"), "logos");
+const logosDir = () => process.env.HTV_LOGOS || path.join(DATA, "logos");
 const logoFile = label => (label?.away && label?.home ? `${label.away}_vs_${label.home}.png` : null);
 const logoUrl = (req, label) => {
   const f = logoFile(label);
@@ -242,7 +222,7 @@ const captureLink = new Map(); // capture id -> link, to blame the right one for
 async function livePlaylist(capture) {
   const wrap = (u, kind) => streamUrl(capture.id, u, kind);
   const fetchText = async target => {
-    const r = await proxy.respond(extractSes, capture.id, target, null, wrap);
+    const r = await proxy.respond(await engine.fetcher(), capture.id, target, null, wrap);
     const text = r.ok ? await r.text() : "";
     return text.startsWith("#EXTM3U") ? text : null;
   };
@@ -326,41 +306,6 @@ async function live(req, res, url) {
   res.end(renumber(entry, text, switched));
 }
 
-async function labels(res) {
-  sendJson(res, 200, await nhlLabels());
-}
-
-// Android TV app updates. Copy app-release.apk and output-metadata.json from
-// androidtv/app/build/outputs/apk/release/ into <data>/androidtv/; the app offers the
-// update when its versionCode is higher than the installed one.
-const tvDir = () => path.join(app.getPath("userData"), "androidtv");
-
-// The published build: { versionCode, versionName, file }, or null.
-function tvBuild() {
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(tvDir(), "output-metadata.json"), "utf8"));
-    const el = meta.elements[0];
-    const file = path.join(tvDir(), path.basename(el.outputFile));
-    return fs.existsSync(file) ? { versionCode: el.versionCode, versionName: el.versionName, file } : null;
-  } catch {
-    return null;
-  }
-}
-
-function tvUpdate(res) {
-  const build = tvBuild();
-  if (!build) return sendJson(res, 200, { available: false });
-  sendJson(res, 200, { available: true, versionCode: build.versionCode, versionName: build.versionName, url: "/api/tv-update/apk" });
-}
-
-function tvApk(res) {
-  const build = tvBuild();
-  if (!build) return sendJson(res, 404, { error: "no build" });
-  const size = fs.statSync(build.file).size;
-  res.writeHead(200, { "Content-Type": "application/vnd.android.package-archive", "Content-Length": size, "Cache-Control": "no-store" });
-  fs.createReadStream(build.file).on("error", () => res.destroy()).pipe(res);
-}
-
 /* ---------------- HTTP ---------------- */
 
 function startHttp() {
@@ -384,28 +329,21 @@ function startHttp() {
     if (url.pathname === "/api/summary") {
       return summary().then(body => sendJson(res, 200, body), err => sendJson(res, 500, { error: err.message }));
     }
-    if (url.pathname === "/api/play") {
-      return play(req, res, url).catch(err => sendJson(res, 500, { ok: false, error: err.message }));
-    }
-    if (url.pathname === "/api/labels") return labels(res);
-    if (url.pathname === "/api/tv-update") return tvUpdate(res);
     if (url.pathname === "/api/m3u") return liveList(req, res, "m3u");
     if (url.pathname === "/api/xmltv") return liveList(req, res, "xmltv");
     if (url.pathname.startsWith("/live/")) {
       return live(req, res, url).catch(err => { if (!res.headersSent) sendJson(res, 500, { error: err.message }); });
     }
-    if (url.pathname === "/api/tv-update/apk") return tvApk(res);
     sendJson(res, 404, { error: "not found" });
   });
   server.listen(PORT, HOST, () => log(`htv server ${VERSION} listening on ${HOST}:${PORT}${TOKEN ? " (token required)" : ""}`));
 }
 
-app.whenReady().then(async () => {
+(async () => {
   checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 3));
   checker.onStatusChange((link, status) => { if (status !== "checking") log(`${status.padEnd(4)} ${link}`); });
-  extractSes = engine.setupExtractSession();
-  await engine.setupAdblock([extractSes]);
+  await engine.start(DATA);
   startHttp();
   await refresh();
   setInterval(refresh, REFRESH_MS);
-});
+})();

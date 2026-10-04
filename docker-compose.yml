@@ -8,8 +8,7 @@ services:
     ports:
       - "8787:8787"
     environment:
-      # Put HTV_TOKEN=<random string> in .env next to this file (git-ignored). Release
-      # builds carry the same token (GitHub secret HTV_TOKEN) as their built-in server.
+      # Put HTV_TOKEN=<random string> in .env next to this file (git-ignored).
       HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
       HTV_CONCURRENCY: 3      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
