@@ -34,7 +34,8 @@ function pump() {
 // result is stale. Links no longer listed are dropped.
 // `hot` links (a Set) are rechecked sooner and go first. Concurrency stays the same, so
 // keeping them warm doesn't add load, it only reorders it.
-function check(links, { recheck = true, hot = new Set() } = {}) {
+// `idleMs` overrides how stale a non-hot result must be before it is rechecked.
+function check(links, { recheck = true, hot = new Set(), idleMs = RECHECK_MS } = {}) {
   const listed = new Set(links);
   queue = queue.filter(l => listed.has(l));
   for (const l of [...results.keys()]) if (!listed.has(l)) results.delete(l);
@@ -42,7 +43,7 @@ function check(links, { recheck = true, hot = new Set() } = {}) {
   for (const link of listed) {
     const r = results.get(link);
     if (queue.includes(link) || r?.status === "checking") continue;
-    const stale = now - (r?.at ?? 0) > (hot.has(link) ? HOT_RECHECK_MS : RECHECK_MS);
+    const stale = now - (r?.at ?? 0) > (hot.has(link) ? HOT_RECHECK_MS : idleMs);
     if (!r || (recheck && stale)) queue.push(link);
   }
   queue.sort((a, b) => hot.has(b) - hot.has(a));

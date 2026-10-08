@@ -1,0 +1,26 @@
+# Pulls each htv channel on demand: a viewer opening /ch_<id>/ makes MediaMTX fetch
+# http://htv:8787/live/<id>.m3u8, and every viewer shares that one pull. Contains HTV_TOKEN: git-ignored.
+logLevel: info
+readTimeout: 30s    # htv can take a while to find a mirror on a cold channel (default 10s gave up too early)
+rtsp: no
+rtmp: no
+srt: no
+api: no
+metrics: no
+pprof: no
+playback: no
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: no
+hlsAllowOrigin: '*'
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: '*'
+webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: [htvrtc.duckdns.org]
+paths:
+  "~^ch_([0-9a-f]+)$":
+    source: http://htv:8787/live/$G1.m3u8?token=YOUR_HTV_TOKEN
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 30s
+    sourceOnDemandCloseAfter: 60s

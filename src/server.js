@@ -31,6 +31,24 @@ const TOKEN = process.env.HTV_TOKEN || "";
 const REFRESH_MS = +(process.env.HTV_REFRESH_MIN || 5) * 60 * 1000;
 const VERSION = require("../package.json").version;
 
+// Check scheduling. With HTV_PRIORITY_TEAMS set, links are only kept warm (rechecked every few
+// minutes) for those teams' games from HTV_PRIORITY_LEAD_MIN before the start until an hour after
+// the end, and for any game someone tuned within HTV_DEMAND_MIN. Everything else is rechecked
+// every HTV_IDLE_RECHECK_MIN. Unset, every game is kept warm as before.
+const PRIORITY = (process.env.HTV_PRIORITY_TEAMS || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 60) * 60 * 1000;
+const DEMAND_MS = +(process.env.HTV_DEMAND_MIN || 20) * 60 * 1000;
+// Outside the warm window each channel keeps only its first HTV_IDLE_LINKS mirrors in the checker
+// (default 1; 0 = check them all). The rest aren't probed until the game turns hot or is tuned.
+const IDLE_LINKS = +(process.env.HTV_IDLE_LINKS ?? 1);
+const IDLE_MS = process.env.HTV_IDLE_RECHECK_MIN ? +process.env.HTV_IDLE_RECHECK_MIN * 60 * 1000 : undefined;
+// Tuning a channel keeps that channel's mirrors warm (they are what failover switches between), not every
+// feed of the game: a game has dozens of mirrors and rechecking them all is what loads the CPU. HTV_DEMAND_SCOPE=game
+// restores the old behaviour (every feed of a tuned game stays warm, so changing feed is instant).
+const DEMAND_BY_GAME = process.env.HTV_DEMAND_SCOPE === "game";
+const demandKey = g => (DEMAND_BY_GAME ? g.gameId : g.id);
+const demand = new Map(); // channel id (or game id) -> last tune time
+
 const DATA = path.resolve(process.env.HTV_DATA || "htv-data");
 fs.mkdirSync(DATA, { recursive: true });
 // A stray rejection from a page or socket must not take the server down.
@@ -53,9 +71,26 @@ async function refresh() {
     }
     log("scrape failed:", state.error);
   }
-  const links = engine.nhlLinks(state.data);
-  checker.check(links, { hot: livetv.hotLinks(state.data) });
-  log(`schedule: ${state.data?.streams?.length ?? 0} links, ${links.length} NHL`);
+  schedule();
+  log(`schedule: ${state.data?.streams?.length ?? 0} links, ${engine.nhlLinks(state.data).length} NHL`);
+}
+
+let lastHot = -1;
+function schedule() {
+  const hot = livetv.hotLinks(state.data, PRIORITY.length ? { teams: PRIORITY, leadMs: LEAD_MS } : {});
+  if (PRIORITY.length) {
+    const now = Date.now();
+    for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => hot.add(l));
+  }
+  let links = engine.nhlLinks(state.data);
+  if (PRIORITY.length && IDLE_LINKS > 0) {
+    const keep = new Set(hot);
+    for (const g of livetv.games(state.data)) g.links.slice(0, IDLE_LINKS).forEach(l => keep.add(l));
+    links = links.filter(l => keep.has(l));
+  }
+  if (hot.size !== lastHot) log(`mode: ${hot.size ? `warm, keeping ${hot.size} links hot` : "idle"}`);
+  lastHot = hot.size;
+  checker.check(links, { hot, idleMs: IDLE_MS });
 }
 
 function authorized(req, url) {
@@ -139,10 +174,12 @@ async function serveStream(req, res, url) {
   if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return sendJson(res, 403, { error: "bad stream url" });
   }
-  const get = async () => proxy.respond(await engine.fetcher(), id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind));
-  // Upstream hiccups with a lone 5xx now and then; one retry saves the player from erroring out.
+  const timeout = proxy.isPlaylist(target, "") ? PLAYLIST_TIMEOUT_MS : SEGMENT_TIMEOUT_MS;
+  const get = async () => proxy.respond(await engine.fetcher(), id, target, req.headers.range, (u, kind) => streamUrl(id, u, kind), timeout);
+  // Upstream hiccups with a lone 5xx now and then; one retry saves the player from erroring out. A request that
+  // never reached the mirror (timeout, reset) already cost its full timeout, so it is not retried: the mirror is dead.
   let r = await get();
-  if (r.status >= 500) r = await get();
+  if (r.status >= 500 && !r.headers.get("x-htv-fetch-error")) r = await get();
   if (r.status >= 400 && r.status !== 416) { log(`stream ${r.status} ${target.slice(0, 90)}`); markDown(id); }
   res.writeHead(r.status, Object.fromEntries(r.headers));
   if (!r.body || req.method === "HEAD") return res.end();
@@ -181,12 +218,22 @@ function serveLogo(res, name) {
   });
 }
 
-async function liveList(req, res, format) {
+// "http://192.168.2.152:8888": MediaMTX (HLS) on the same host the client reached us on.
+const EDGE_PORT = process.env.HTV_EDGE_PORT || "8888";
+// HTV_EDGE_PUBLIC="htvsource.duckdns.org=https://htvhls.duckdns.org": a client that reached us on a
+// public name gets that name's MediaMTX URL; LAN clients keep <same host>:8888.
+const EDGE_PUBLIC = Object.fromEntries((process.env.HTV_EDGE_PUBLIC || "").split(",").filter(Boolean).map(e => e.split(/=(.*)/s).slice(0, 2)));
+const edgeUrl = req => {
+  const host = (req.headers.host || "").replace(/:\d+$/, "");
+  return EDGE_PUBLIC[host] || `${req.headers["x-forwarded-proto"] || "http"}://${host}:${EDGE_PORT}`;
+};
+
+async function liveList(req, res, format, edge = false) {
   const list = livetv.games(state.data, checker.statuses());
   const labels = await nhlLabels();
   if (format === "m3u") {
     res.writeHead(200, { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store" });
-    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN, l => logoUrl(req, l)));
+    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN, l => logoUrl(req, l), state.data || {}, Date.now(), edge ? edgeUrl(req) : null));
   }
   res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" });
   res.end(livetv.xmltv(list, labels, state.data || {}, l => logoUrl(req, l)));
@@ -215,14 +262,19 @@ async function firstWorking(links, res) {
 // The mirror each channel is playing right now. Jellyfin's ffmpeg polls /live/<id>.m3u8
 // for the whole viewing, so the server can swap a dead mirror for another one between two
 // polls and the player never sees it. Playlist sequence numbers keep counting across a swap.
-const current = new Map(); // channel id -> { link, capture, offset, end }
+const current = new Map(); // channel id -> { link, capture, offset, end, sig, advancedAt }
+// Failing over fast matters more than waiting out a slow mirror: a playlist that takes over 6 s, a segment
+// over 12 s (3x a typical segment), or a playlist frozen for 12 s+ counts as dead and the channel moves on.
+const PLAYLIST_TIMEOUT_MS = +(process.env.HTV_PLAYLIST_TIMEOUT_SEC || 6) * 1000;
+const SEGMENT_TIMEOUT_MS = +(process.env.HTV_SEGMENT_TIMEOUT_SEC || 12) * 1000;
+const STALL_MIN_MS = +(process.env.HTV_STALL_SEC || 12) * 1000;
 const captureLink = new Map(); // capture id -> link, to blame the right one for a failed segment
 
 // A mirror's playlist as one media playlist (the best variant of a master), or null.
 async function livePlaylist(capture) {
   const wrap = (u, kind) => streamUrl(capture.id, u, kind);
   const fetchText = async target => {
-    const r = await proxy.respond(await engine.fetcher(), capture.id, target, null, wrap);
+    const r = await proxy.respond(await engine.fetcher(), capture.id, target, null, wrap, PLAYLIST_TIMEOUT_MS);
     const text = r.ok ? await r.text() : "";
     return text.startsWith("#EXTM3U") ? text : null;
   };
@@ -267,10 +319,17 @@ async function live(req, res, url) {
   const statuses = checker.statuses();
   const game = livetv.games(state.data, statuses).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
+  // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
+  if (PRIORITY.length) {
+    const fresh = Date.now() - (demand.get(demandKey(game)) || 0) > DEMAND_MS;
+    demand.set(demandKey(game), Date.now());
+    if (fresh) schedule();
+  }
 
   let text = null, entry = current.get(id), switched = false;
   if (entry) {
     text = await livePlaylist(entry.capture).catch(() => null);
+    if (text && livetv.stalled(entry, text, Date.now(), STALL_MIN_MS)) { log(`stall ${entry.link}`); text = null; }
     if (!text) markDown(entry.capture.id);
   }
   if (!text) {
@@ -283,7 +342,8 @@ async function live(req, res, url) {
       if (captureLink.size > 500) captureLink.delete(captureLink.keys().next().value);
       const t = await livePlaylist(capture).catch(() => null);
       if (!t) { checker.record(link, "fail"); return false; }
-      entry = { link, capture, offset: 0, end: prev };
+      entry = { link, capture, offset: 0, end: prev, sig: null, advancedAt: Date.now() };
+      livetv.stalled(entry, t);
       current.set(id, entry);
       text = t;
       return true;
@@ -330,6 +390,7 @@ function startHttp() {
       return summary().then(body => sendJson(res, 200, body), err => sendJson(res, 500, { error: err.message }));
     }
     if (url.pathname === "/api/m3u") return liveList(req, res, "m3u");
+    if (url.pathname === "/api/m3u-edge") return liveList(req, res, "m3u", true);
     if (url.pathname === "/api/xmltv") return liveList(req, res, "xmltv");
     if (url.pathname.startsWith("/live/")) {
       return live(req, res, url).catch(err => { if (!res.headersSent) sendJson(res, 500, { error: err.message }); });
@@ -346,4 +407,5 @@ function startHttp() {
   startHttp();
   await refresh();
   setInterval(refresh, REFRESH_MS);
+  setInterval(schedule, 60 * 1000); // hot links are due every 3 min; the scrape only runs every few
 })();

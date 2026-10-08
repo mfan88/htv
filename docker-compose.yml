@@ -13,7 +13,34 @@ services:
       HTV_CONCURRENCY: 3      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
       HTV_LOGOS: /logos       # thumbnails folder (the mount below)
+      # Idle by default: links are rechecked every 3 h. Oilers games are kept warm from 1 h before
+      # puck drop until 1 h after the end, and any game someone tunes stays warm for 20 min.
+      HTV_PRIORITY_TEAMS: "edmonton,oilers"
+      HTV_PRIORITY_LEAD_MIN: 60
+      HTV_DEMAND_MIN: 20
+      HTV_IDLE_RECHECK_MIN: 180
+      HTV_IDLE_LINKS: 1       # non-Oilers channels: only their first mirror is ever checked until tuned (0 = all)
+      # Playlist for IPTV apps (/api/m3u-edge): a client on this public name gets that MediaMTX URL.
+      HTV_EDGE_PUBLIC: "htvsource.duckdns.org=https://htvhls.duckdns.org"
+      HTV_CHROMIUM_NICE: 15   # link-check browser runs at low priority so it cannot starve the stream proxy (0 = off)
+      # HTV_DEMAND_SCOPE: game   # uncomment: keep every feed of a tuned game warm (instant feed switching, much more CPU)
+      HTV_DISABLE_GPU: "1"    # no GPU in the container; the software-GL process was the hottest one
+      HTV_BLOCK_HEAVY: "1"    # link checks skip images/fonts/video
     volumes:
       - ${HTV_LOGOS:-./htv-data/logos}:/logos:ro   # AWAY_vs_HOME.png thumbnails (set HTV_LOGOS in .env to use another folder)
       - ./htv-data:/data      # caches (schedule, ad-block filters)
+    cpu_shares: 256           # yield to Jellyfin and the rest of the stack when the CPU is contended
     shm_size: 512m            # Chromium needs more shared memory than Docker's 64 MB default
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.15.0   # pinned: newer releases require a session cookie that IPTVnator/TV apps may not send
+    container_name: htv-mediamtx
+    restart: unless-stopped
+    depends_on:
+      - htv
+    ports:
+      - "8888:8888"             # HLS / LL-HLS: http://<server>:8888/ch_<id>/index.m3u8
+      - "8889:8889"             # WebRTC (browser, sub-second)
+      - "8189:8189/udp"         # WebRTC media
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro   # generated from .env, see MEDIAMTX.md

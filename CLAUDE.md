@@ -20,7 +20,7 @@ It used to be an Electron desktop app plus an Android TV app. Both were deleted 
 
 ## How a tune works (the part that matters most)
 
-`/live/<id>.m3u8` does not redirect. It serves the playlist itself, so Jellyfin's ffmpeg keeps polling it and the server can swap a dead mirror between polls: `current` (channel -> mirror) is tried first, then recent captures from the checker (probed), then a fresh extraction of up to 3 links. A master playlist is flattened to its best variant, and `#EXT-X-MEDIA-SEQUENCE` is renumbered so it never goes backwards across a swap. A failed playlist or segment (after one retry on 5xx) marks the mirror down (`down <link>` in the log).
+`/live/<id>.m3u8` does not redirect. It serves the playlist itself, so Jellyfin's ffmpeg keeps polling it and the server can swap a dead mirror between polls: `current` (channel -> mirror) is tried first, then recent captures from the checker (probed), then a fresh extraction of up to 3 links. A master playlist is flattened to its best variant, and `#EXT-X-MEDIA-SEQUENCE` is renumbered so it never goes backwards across a swap. A failed playlist or segment (after one retry on 5xx) marks the mirror down (`down <link>` in the log). Failover is meant to be fast: a playlist fetch over `HTV_PLAYLIST_TIMEOUT_SEC` (6) or a segment fetch over `HTV_SEGMENT_TIMEOUT_SEC` (12) counts as dead, and a request that never reached the mirror (timeout, reset: proxy tags it `X-Htv-Fetch-Error`) is not retried. A mirror that still answers 200 but whose playlist stops advancing (same media sequence and newest segment for max(`HTV_STALL_SEC` (12), 2.5 x target duration)) is marked down too (`stall <link>` in the log; `livetv.stalled`). The channel then switches on the next playlist poll.
 
 ## Conventions
 
@@ -43,3 +43,5 @@ ffmpeg -i "http://localhost:8788/live/<id>.m3u8?token=t" -t 10 -c copy -f null -
 ## Server
 
 Public at `https://htv.fenna.tech` through Caddy on the host (`/etc/caddy/Caddyfile`, which also serves Jellyfin and Seerr; no passwordless sudo, so ask the owner to restart it; `reload` once panicked, `restart` is safer). DNS on Cloudflare, DNS-only so video doesn't go through Cloudflare's proxy. Thumbnails live in `/mnt/nvme/htv-data/logos` (992 files, `AWAY_vs_HOME.png`).
+
+**Load.** Chromium (link checks) and the stream proxy share one container. `engine.js` starts the browser through a `nice -n HTV_CHROMIUM_NICE` wrapper around the headless shell (the image has only the shell, not full Chromium), and tuning a channel warms only that channel's mirrors (`HTV_DEMAND_SCOPE=game` for the whole game). Both exist because a round of checks made live segments arrive late and the player buffered.

@@ -1,0 +1,30 @@
+# Run htv from the published image, no clone or build needed:
+#   curl -O https://raw.githubusercontent.com/mfan88/htv/main/docker-compose.ghcr.yml
+#   curl -o .env https://raw.githubusercontent.com/mfan88/htv/main/.env.example   # then edit it
+#   docker compose -f docker-compose.ghcr.yml up -d
+services:
+  htv:
+    image: ghcr.io/mfan88/htv:latest
+    container_name: htv-server
+    restart: unless-stopped
+    ports:
+      - "${HTV_PORT:-8787}:8787"
+    environment:
+      HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
+      HTV_CONCURRENCY: ${HTV_CONCURRENCY:-3}
+      HTV_REFRESH_MIN: ${HTV_REFRESH_MIN:-5}
+      HTV_LOGOS: /logos
+      HTV_PRIORITY_TEAMS: ${HTV_PRIORITY_TEAMS:-}      # e.g. "edmonton,oilers"; empty = keep every game warm
+      HTV_PRIORITY_LEAD_MIN: ${HTV_PRIORITY_LEAD_MIN:-60}
+      HTV_DEMAND_MIN: ${HTV_DEMAND_MIN:-20}
+      HTV_IDLE_RECHECK_MIN: ${HTV_IDLE_RECHECK_MIN:-180}
+      HTV_IDLE_LINKS: ${HTV_IDLE_LINKS:-1}
+      HTV_EDGE_PUBLIC: ${HTV_EDGE_PUBLIC:-}
+      HTV_CHROMIUM_NICE: 15
+      HTV_DISABLE_GPU: "1"
+      HTV_BLOCK_HEAVY: "1"
+    volumes:
+      - ${HTV_LOGOS:-./logos}:/logos:ro   # optional AWAY_vs_HOME.png thumbnails
+      - ./htv-data:/data
+    cpu_shares: 256
+    shm_size: 512m

@@ -9,7 +9,7 @@ const GAME_MS = 3.5 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
 // One channel per game and feed/channel pair ("SN West", "NHL Network"), in schedule
-// order: { id, gameId, league, time, name, feed, channel, links }. links are that
+// order: { id, gameId, league, time, name, feed, channel, start?, links }. links are that
 // channel's mirrors, best first. Ids only depend on the game and channel, so a channel
 // keeps its id across scrapes.
 function games(data, statuses = {}) {
@@ -20,7 +20,7 @@ function games(data, statuses = {}) {
     const key = `${gameKey}|${r.feed}|${r.channel}`;
     if (!map.has(key)) {
       const hash = k => crypto.createHash("sha1").update(k).digest("hex").slice(0, 10);
-      map.set(key, { id: hash(key), gameId: hash(gameKey), league: r.league, time: r.time, name: r.game, feed: r.feed, channel: r.channel, links: [] });
+      map.set(key, { id: hash(key), gameId: hash(gameKey), league: r.league, time: r.time, name: r.game, feed: r.feed, channel: r.channel, start: r.start, links: [] });
     }
     const g = map.get(key);
     if (!g.links.includes(r.link)) g.links.push(r.link);
@@ -34,12 +34,15 @@ function games(data, statuses = {}) {
 const channelSuffix = g => (g.channel ? ` · ${g.channel}${/^home/i.test(g.feed || "") ? "" : ` (${g.feed})`}` : "");
 const channelName = (g, label) => (label ? `${label.away} @ ${label.home}` : g.name) + channelSuffix(g);
 
-// Games on or near the air: the links worth keeping captured.
-function hotLinks(data, now = Date.now()) {
+// Games on or near the air: the links worth keeping captured. With `teams` (lowercase
+// substrings of the game name, e.g. "oilers") only those teams' games count, and the window
+// opens `leadMs` before the start; without it every game counts, 3 hours ahead.
+function hotLinks(data, { teams = [], leadMs = 3 * HOUR, now = Date.now() } = {}) {
   const hot = new Set();
   for (const g of games(data)) {
+    if (teams.length && !teams.some(t => g.name.toLowerCase().includes(t))) continue;
     const start = startTime(g, null, data);
-    if (start == null || now < start - 3 * HOUR || now > start + GAME_MS + HOUR) continue;
+    if (start == null || now < start - leadMs || now > start + GAME_MS + HOUR) continue;
     g.links.forEach(l => hot.add(l));
   }
   return hot;
@@ -49,6 +52,7 @@ function hotLinks(data, now = Date.now()) {
 // UTC offset, on the day of the scrape; a time long past means tomorrow).
 function startTime(g, label, data) {
   if (label?.start) return Date.parse(label.start);
+  if (g.start) return Date.parse(g.start);
   const m = /^(\d{1,2}):(\d{2})$/.exec(g.time || "");
   if (!m) return null;
   const offset = data.source_utc_offset ?? 1;
@@ -59,15 +63,24 @@ function startTime(g, label, data) {
   return t;
 }
 
-// `logo(label)` is the thumbnail URL for a game's NHL label, or null.
-function m3u(list, labels, base, token, logo = () => null) {
+// Channel group: IPTV apps (TiviMate) list channels by group, so split the games by state.
+function groupOf(g, label, data, now) {
+  const start = startTime(g, label, data);
+  if (start == null) return "NHL";
+  if (now >= start - 15 * 60 * 1000 && now <= start + GAME_MS) return "Live now";
+  return now < start ? "Upcoming" : "Finished";
+}
+
+// `logo(label)` is the thumbnail URL for a game's NHL label, or null. With `edge` (the MediaMTX
+// base URL) channels point at MediaMTX, which pulls /live/<id>.m3u8 itself and shares one pull.
+function m3u(list, labels, base, token, logo = () => null, data = {}, now = Date.now(), edge = null) {
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   const lines = ["#EXTM3U"];
   list.forEach((g, i) => {
     const name = channelName(g, labels[g.name]).replace(/[",]/g, " ");
     const icon = logo(labels[g.name]);
-    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}"${icon ? ` tvg-logo="${icon}"` : ""} group-title="NHL",${name}`);
-    lines.push(`${base}/live/${g.id}.m3u8${q}`);
+    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}"${icon ? ` tvg-logo="${icon}"` : ""} group-title="${groupOf(g, labels[g.name], data, now)}",${name}`);
+    lines.push(edge ? `${edge}/ch_${g.id}/index.m3u8` : `${base}/live/${g.id}.m3u8${q}`);
   });
   return lines.join("\n") + "\n";
 }
@@ -100,4 +113,17 @@ function xmltv(list, labels, data, logo = () => null) {
   return out.join("\n") + "\n";
 }
 
-module.exports = { games, m3u, xmltv, hotLinks };
+// A mirror can answer 200 and still be dead: the feed froze, so its playlist stops advancing and
+// the player runs out of segments. `entry` carries the last playlist signature (media sequence + newest
+// segment) and when it last changed; true once it has been frozen for 2.5 target durations (at least minMs).
+function stalled(entry, text, now = Date.now(), minMs = 12000) {
+  if (!text || /#EXT-X-ENDLIST/.test(text)) return false;
+  const seq = /#EXT-X-MEDIA-SEQUENCE:(\d+)/.exec(text)?.[1] || "0";
+  const lastUri = text.split(/\r?\n/).filter(l => l.trim() && !l.startsWith("#")).pop() || "";
+  const sig = `${seq}|${lastUri}`;
+  if (sig !== entry.sig) { entry.sig = sig; entry.advancedAt = now; return false; }
+  const target = +/#EXT-X-TARGETDURATION:(\d+)/.exec(text)?.[1] || 6;
+  return now - entry.advancedAt > Math.max(minMs, 2.5 * target * 1000);
+}
+
+module.exports = { games, m3u, xmltv, hotLinks, stalled };

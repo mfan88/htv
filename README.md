@@ -21,9 +21,13 @@ docker compose logs -f          # `ok` / `fail` per link, `live ok …` per tune
 
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
-Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`).
+Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
 
 To publish it, put a reverse proxy in front (Caddy: `reverse_proxy 127.0.0.1:8787 { flush_interval -1 }` so streams aren't buffered).
+
+## TiviMate, VLC and browsers (MediaMTX)
+
+A MediaMTX container in the same compose project serves every channel as HLS from one shared pull. Playlist for IPTV apps: `http://<server>:8787/api/m3u-edge?token=<HTV_TOKEN>`. Setup, testing and troubleshooting: [MEDIAMTX.md](MEDIAMTX.md).
 
 ## Jellyfin Live TV
 

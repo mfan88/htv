@@ -4,6 +4,7 @@
 
 const fs = require("fs");
 const { Parser } = require("htmlparser2");
+const gkstreams = require("./gkstreams");
 
 const SCHEDULE_URL = "https://onhockey.tv/schedule_table.php";
 const FULL_PREFIX = "https://onhockey.tv/index.php?place=np_stream400&channel=//";
@@ -94,11 +95,23 @@ async function fetchSchedule() {
   return new TextDecoder("windows-1251").decode(await res.arrayBuffer());
 }
 
+// GKStreams links are extra mirrors; if that site is down the onhockey schedule still stands.
+async function extraMirrors(streams) {
+  try {
+    const have = new Set(streams.map(r => `${r.game}|${r.feed}|${r.channel}|${r.link}`));
+    return (await gkstreams.mirrors(streams)).filter(r => !have.has(`${r.game}|${r.feed}|${r.channel}|${r.link}`));
+  } catch (err) {
+    console.error("gkstreams failed:", err.message || err);
+    return [];
+  }
+}
+
 async function scrape(outputPath) {
+  const streams = parseSchedule(await fetchSchedule());
   const data = {
     updated: new Date().toISOString(),
     source_utc_offset: SOURCE_UTC_OFFSET,
-    streams: parseSchedule(await fetchSchedule()),
+    streams: [...streams, ...await extraMirrors(streams)],
   };
   if (outputPath) fs.writeFileSync(outputPath, JSON.stringify(data, null, 2), "utf8");
   return data;

@@ -11,15 +11,31 @@ const CLICK_AT_MS = [5000, 10000, 15000]; // nudge players that wait for a click
 // custom auth/token headers...) is replayed on proxied requests. Cookies come from the context.
 const SKIP_HEADERS = /^(host|connection|content-length|accept-encoding|cookie|range|sec-|upgrade-insecure-requests)/i;
 const ONHOCKEY = "https://onhockey.tv/";
+// Checks only need the playlist request, so skip decoding images, fonts and video. A playlist
+// loaded as "media" is left alone: its request headers are only known once it reaches the network.
+const BLOCK_HEAVY = process.env.HTV_BLOCK_HEAVY === "1";
+const HEAVY_TYPES = new Set(["image", "font", "media"]);
 
 function wrapperUrl(link) {
   return ONHOCKEY + "np_stream400.php?channel=//" + link;
 }
 
+// Every page opened here, with its open time. A page whose job finished while newPage() was still
+// pending used to be left running forever (playing video, pinning a core); the reaper below is the
+// backstop for anything that still slips through.
+const open = new Map();
+const MAX_PAGE_MS = TIMEOUT_MS + 15000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [page, at] of open) if (now - at > MAX_PAGE_MS) { open.delete(page); page.close().catch(() => {}); }
+}, 30000).unref();
+
 async function openHidden(context, blocker, url, job) {
   const page = await context.newPage();
+  open.set(page, Date.now());
+  page.once("close", () => open.delete(page));
+  if (job.done) return page.close().catch(() => {});
   job.pages.push(page);
-  if (job.done) return;
   if (blocker) await blocker.enableBlockingInPage(page).catch(() => {});
 
   // No popups from anything (ads, pop-unders, "click to play" traps).
@@ -29,6 +45,7 @@ async function openHidden(context, blocker, url, job) {
   let navigations = 0;
   await page.route("**/*", route => {
     const req = route.request();
+    if (BLOCK_HEAVY && HEAVY_TYPES.has(req.resourceType()) && !PLAYLIST_RE.test(req.url())) return route.abort().catch(() => {});
     if (req.isNavigationRequest() && req.frame() === page.mainFrame() && ++navigations > 1) return route.abort().catch(() => {});
     return route.fallback().catch(() => {});
   });

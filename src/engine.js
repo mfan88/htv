@@ -16,9 +16,33 @@ let dataDir = null;
 let starting = null; // Promise<{ browser, context, blocker }>
 let state = null;
 
+// The link checks (several Chromium processes) share this container's CPU with the stream proxy.
+// Start the browser at a lower priority (its children inherit it) so a round of checks can't starve
+// the proxy and make a live stream buffer. HTV_CHROMIUM_NICE=0 turns this off.
+function lowPriorityChromium() {
+  const n = Math.min(19, Math.round(+(process.env.HTV_CHROMIUM_NICE ?? 15)));
+  if (!(n > 0)) return undefined;
+  try {
+    // The image installs only the headless shell, so chromium.executablePath() (full Chromium) is not it.
+    const root = process.env.PLAYWRIGHT_BROWSERS_PATH || "/ms-playwright";
+    const dir = fs.readdirSync(root).find(d => d.startsWith("chromium_headless_shell-"));
+    const real = dir && path.join(root, dir, "chrome-headless-shell-linux64", "chrome-headless-shell");
+    if (!real || !fs.existsSync(real)) throw new Error("headless shell not found under " + root);
+    const wrapper = path.join(require("os").tmpdir(), "htv-chromium.sh");
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec nice -n ${n} "${real}" "$@"\n`, { mode: 0o755 });
+    return wrapper;
+  } catch (err) {
+    console.error("could not lower the browser priority:", err.message);
+    return undefined;
+  }
+}
+
 async function launch() {
   const browser = await chromium.launch({
-    args: ["--mute-audio", "--autoplay-policy=no-user-gesture-required", "--no-sandbox", "--disable-dev-shm-usage"],
+    executablePath: lowPriorityChromium(),
+    args: ["--mute-audio", "--autoplay-policy=no-user-gesture-required", "--no-sandbox", "--disable-dev-shm-usage",
+      // The software-GL GPU process burns CPU in a container with no GPU.
+      ...(process.env.HTV_DISABLE_GPU === "1" ? ["--disable-gpu"] : [])],
   });
   // Some stream hosts refuse browsers that call themselves headless.
   const userAgent = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`;

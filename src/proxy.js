@@ -41,10 +41,10 @@ function isPlaylist(url, contentType) {
 }
 
 // Upstream fetch with the captured headers; `extra` (e.g. Range) wins over them.
-function upstream(fetcher, id, target, extra = {}) {
+function upstream(fetcher, id, target, extra = {}, timeout = 15000) {
   return fetcher.fetch(target, {
     headers: { ...contexts.get(id), ...extra },
-    timeout: 15000,
+    timeout,
     maxRedirects: 5,
     failOnStatusCode: false,
   });
@@ -72,7 +72,9 @@ function tsStart(buf) {
 
 // The response for one proxied request of stream context `id`. Playlists are rewritten
 // so that every URL in them goes through `wrap`.
-async function respond(fetcher, id, target, range, wrap) {
+// `timeout` (ms) caps the upstream wait: a live player needs a fast "dead" answer more than a slow success.
+// A request that fails to reach the mirror at all (timeout, reset) is a 502 tagged X-Htv-Fetch-Error.
+async function respond(fetcher, id, target, range, wrap, timeout = 15000) {
   const headers = contexts.get(id);
   if (!headers || !target || !/^https?:\/\//i.test(target)) {
     return new Response("unknown stream", { status: 404, headers: CORS });
@@ -82,9 +84,9 @@ async function respond(fetcher, id, target, range, wrap) {
 
   let res;
   try {
-    res = await upstream(fetcher, id, target, range ? { Range: range } : {});
+    res = await upstream(fetcher, id, target, range ? { Range: range } : {}, timeout);
   } catch (err) {
-    return new Response(String(err), { status: 502, headers: CORS });
+    return new Response(String(err), { status: 502, headers: { ...CORS, "X-Htv-Fetch-Error": "1" } });
   }
 
   const contentType = res.headers()["content-type"] || "";
@@ -119,4 +121,4 @@ async function respond(fetcher, id, target, range, wrap) {
   return new Response(empty ? null : body, { status: res.status(), headers: outHeaders });
 }
 
-module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe };
+module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe, isPlaylist };
