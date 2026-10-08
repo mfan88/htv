@@ -80,8 +80,11 @@ async function fetcher() {
 }
 
 // Extract a link's stream and confirm its playlist really loads through the proxy.
-async function extractVerified(link, opts) {
+// `prior` (the link's last good capture, from a recheck) is tried first: if its playlist still
+// loads, the link is alive and no page needs to be opened.
+async function extractVerified(link, { prior, ...opts } = {}) {
   const { context, blocker } = await ready();
+  if (prior && proxy.hasContext(prior.id) && await proxy.probe(context.request, prior.id, prior.url)) return prior;
   const capture = await extractor.extract(context, blocker, link, opts);
   if (!capture) return null;
   const id = proxy.addContext(capture.headers);

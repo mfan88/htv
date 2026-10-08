@@ -22,8 +22,9 @@ function pump() {
   while (running < concurrency && queue.length) {
     const link = queue.shift();
     running++;
+    const prior = results.get(link)?.capture || null; // setStatus below clears it
     setStatus(link, "checking");
-    extractFn(link)
+    extractFn(link, { prior })
       .then(capture => setStatus(link, capture ? "ok" : "fail", capture))
       .catch(() => setStatus(link, "fail"))
       .finally(() => { running--; pump(); });

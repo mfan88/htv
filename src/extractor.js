@@ -30,7 +30,31 @@ setInterval(() => {
   for (const [page, at] of open) if (now - at > MAX_PAGE_MS) { open.delete(page); page.close().catch(() => {}); }
 }, 30000).unref();
 
-async function openHidden(context, blocker, url, job) {
+// Which of the two loads wins, per host. Most hosts only ever play in one of them, so once a host has
+// shown it (WIN_MIN wins for one side, none for the other) only that load is opened, which halves the
+// pages per check. Every RELEARN_EVERY-th extraction of a host races both again in case that changed.
+const WIN_MIN = 4;
+const RELEARN_EVERY = 8;
+const wins = new Map(); // host -> { wrapper, bare, n }
+const hostOf = link => link.split("/")[0];
+
+function loadsFor(link) {
+  const w = wins.get(hostOf(link));
+  if (w) w.n++;
+  if (w && w.n % RELEARN_EVERY && w.wrapper >= WIN_MIN && !w.bare) return ["wrapper"];
+  if (w && w.n % RELEARN_EVERY && w.bare >= WIN_MIN && !w.wrapper) return ["bare"];
+  return ["wrapper", "bare"];
+}
+
+function recordWin(link, via) {
+  const host = hostOf(link);
+  const w = wins.get(host) || { wrapper: 0, bare: 0, n: 0 };
+  wins.set(host, w);
+  w[via]++;
+  if (w[via] === WIN_MIN && !w[via === "wrapper" ? "bare" : "wrapper"]) console.log(`${host}: only the ${via} load wins, opening just that`);
+}
+
+async function openHidden(context, blocker, url, job, via) {
   const page = await context.newPage();
   open.set(page, Date.now());
   page.once("close", () => open.delete(page));
@@ -57,7 +81,7 @@ async function openHidden(context, blocker, url, job) {
     if (!all) return;
     const headers = {};
     for (const [k, v] of Object.entries(all)) if (!SKIP_HEADERS.test(k)) headers[k] = v;
-    job.finish({ url: req.url(), headers });
+    job.finish({ url: req.url(), headers }, via);
   });
 
   for (const ms of CLICK_AT_MS) {
@@ -87,8 +111,9 @@ function extract(context, blocker, link, { signal } = {}) {
       done: false,
       timers: [],
       pages: [],
-      finish(capture) {
+      finish(capture, via) {
         if (job.done) return;
+        if (capture && via) recordWin(link, via);
         job.done = true;
         job.timers.forEach(clearTimeout);
         for (const p of job.pages) p.close().catch(() => {});
@@ -98,8 +123,9 @@ function extract(context, blocker, link, { signal } = {}) {
     if (signal?.aborted) return job.finish(null);
     signal?.addEventListener("abort", () => job.finish(null), { once: true });
     job.timers.push(setTimeout(() => job.finish(null), TIMEOUT_MS));
-    for (const url of [wrapperUrl(link), "https://" + link]) {
-      openHidden(context, blocker, url, job).catch(() => job.finish(null));
+    const urls = { wrapper: wrapperUrl(link), bare: "https://" + link };
+    for (const via of loadsFor(link)) {
+      openHidden(context, blocker, urls[via], job, via).catch(() => job.finish(null));
     }
   });
 }
