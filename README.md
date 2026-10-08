@@ -21,7 +21,7 @@ docker compose logs -f          # `ok` / `fail` per link, `live ok …` per tune
 
 ### From the published image (no clone, no build)
 
-`ghcr.io/mfan88/htv:latest` is built by GitHub Actions on every push to `main` (amd64 and arm64). Save this as `docker-compose.yml` in an empty folder, put `HTV_TOKEN=<a long random string>` in a `.env` next to it, and run `docker compose up -d`. It needs Docker Compose 2.23.1 or newer (compose generates the MediaMTX config from `.env`). Only `HTV_TOKEN` is required; the rest are optional. `cpus:` caps how much CPU htv may use.
+`ghcr.io/mfan88/htv:latest` is built by GitHub Actions on every push to `main` (amd64 and arm64). Save this as `docker-compose.yml` in an empty folder and run `docker compose up -d`. There is no `.env`: every setting is written out below, so edit the values in the file. Change `CHANGE_ME` to a long random string in **both** places (htv's `HTV_TOKEN` and the MediaMTX `source:` line; they must match). Needs Docker Compose 2.23.1 or newer.
 
 ```yaml
 services:
@@ -30,40 +30,45 @@ services:
     container_name: htv-server
     restart: unless-stopped
     ports:
-      - "${HTV_PORT:-8787}:8787"
+      - "8787:8787"
     environment:
-      HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
-      HTV_CONCURRENCY: ${HTV_CONCURRENCY:-3}
-      HTV_REFRESH_MIN: ${HTV_REFRESH_MIN:-5}
-      HTV_LOGOS: /logos
-      HTV_PRIORITY_TEAMS: ${HTV_PRIORITY_TEAMS:-}      # e.g. "edmonton,oilers"; empty = keep every game warm
-      HTV_PRIORITY_LEAD_MIN: ${HTV_PRIORITY_LEAD_MIN:-60}
-      HTV_DEMAND_MIN: ${HTV_DEMAND_MIN:-20}
-      HTV_IDLE_RECHECK_MIN: ${HTV_IDLE_RECHECK_MIN:-180}
-      HTV_IDLE_LINKS: ${HTV_IDLE_LINKS:-1}
-      HTV_EDGE_PUBLIC: ${HTV_EDGE_PUBLIC:-}
-      HTV_CHROMIUM_NICE: 15
+      HTV_TOKEN: CHANGE_ME                 # required; clients send it as ?token= or a Bearer header
+      HTV_PORT: 8787
+      HTV_DATA: /data
+      HTV_CONCURRENCY: 3                   # link checks at once
+      HTV_REFRESH_MIN: 5                   # minutes between schedule scrapes
+      HTV_PRIORITY_TEAMS: ""               # e.g. "edmonton,oilers": only their games are kept warm; empty = every game
+      HTV_PRIORITY_LEAD_MIN: 60            # warm window opens this long before puck drop
+      HTV_DEMAND_MIN: 20                   # a channel someone tuned stays warm this long
+      HTV_IDLE_RECHECK_MIN: 180            # recheck interval for links outside the warm window
+      HTV_IDLE_LINKS: 1                    # mirrors checked per channel outside the warm window (0 = all)
+      HTV_PLAYLIST_TIMEOUT_SEC: 6          # slower than this counts as a dead mirror
+      HTV_SEGMENT_TIMEOUT_SEC: 12
+      HTV_STALL_SEC: 12                    # a playlist frozen this long counts as dead
+      HTV_CHROMIUM_NICE: 15                # link-check browser CPU priority (0 = off)
       HTV_DISABLE_GPU: "1"
-      HTV_BLOCK_HEAVY: "1"
+      HTV_BLOCK_HEAVY: "1"                 # link checks skip images/fonts/video
+      HTV_LOGOS: /logos                    # thumbnail folder (optional, see the volume below)
+      HTV_EDGE_PUBLIC: ""                  # public setup: "<source hostname>=<MediaMTX HLS URL>"
     volumes:
-      - ${HTV_LOGOS:-./logos}:/logos:ro   # optional AWAY_vs_HOME.png thumbnails
       - ./htv-data:/data
-    cpus: 4                  # CPU cap; raise or lower to taste
+      # - ./logos:/logos:ro                # optional AWAY_vs_HOME.png thumbnails
+    cpus: 4                                # CPU cap; raise or lower to taste
     cpu_shares: 256
-    shm_size: 512m
+    shm_size: 512m                         # Chromium needs more than Docker's 64 MB default
 
-  # MediaMTX is the single place IPTV apps (TiviMate, VLC) pull from: one pull per channel from htv,
-  # shared by every viewer. Playlist for it: http://<host>:8787/api/m3u-edge?token=<HTV_TOKEN>
+  # The one place IPTV apps (TiviMate, VLC) pull from: one pull per channel, shared by all viewers.
+  # Playlist for it: http://<host>:8787/api/m3u-edge?token=<HTV_TOKEN>
   mediamtx:
-    image: bluenviron/mediamtx:1.15.0   # pinned: newer releases require a session cookie that IPTV apps may not send
+    image: bluenviron/mediamtx:1.15.0      # pinned: newer releases require a session cookie IPTV apps may not send
     container_name: htv-mediamtx
     restart: unless-stopped
     depends_on:
       - htv
     ports:
-      - "${MTX_HLS_PORT:-8888}:8888"    # HLS: http://<host>:8888/ch_<id>/index.m3u8
-      - "${MTX_WEBRTC_PORT:-8889}:8889" # WebRTC page / signalling
-      - "8189:8189/udp"                 # WebRTC media
+      - "8888:8888"                        # HLS: http://<host>:8888/ch_<id>/index.m3u8
+      - "8889:8889"                        # WebRTC page / signalling
+      - "8189:8189/udp"                    # WebRTC media
     configs:
       - source: mediamtx
         target: /mediamtx.yml
@@ -72,7 +77,7 @@ configs:
   mediamtx:
     content: |
       logLevel: info
-      readTimeout: 30s    # htv can take a while to find a mirror on a cold channel
+      readTimeout: 30s
       rtsp: no
       rtmp: no
       srt: no
@@ -88,16 +93,16 @@ configs:
       webrtcAddress: :8889
       webrtcAllowOrigin: '*'
       webrtcLocalUDPAddress: :8189
-      webrtcAdditionalHosts: [${HTV_RTC_HOST:-}]
+      webrtcAdditionalHosts: []            # public hostname of the WebRTC page, if exposed: [rtc.example.com]
       paths:
         "~^ch_([0-9a-f]+)$$":
-          source: http://htv:8787/live/$$G1.m3u8?token=${HTV_TOKEN}
+          source: http://htv:8787/live/$$G1.m3u8?token=CHANGE_ME
           sourceOnDemand: yes
           sourceOnDemandStartTimeout: 30s
           sourceOnDemandCloseAfter: 60s
 ```
 
-Optional `.env` keys: `HTV_PRIORITY_TEAMS` (e.g. `edmonton,oilers`: only those teams' games are kept warm, empty keeps every game warm), `HTV_LOGOS` (thumbnail folder), `HTV_EDGE_PUBLIC` (`<source hostname>=<MediaMTX HLS URL>` for a public setup), `HTV_RTC_HOST` (public hostname of the WebRTC page).
+(`$$` is how compose writes a literal `$`; leave it.)
 
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
