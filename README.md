@@ -19,6 +19,86 @@ docker compose up -d --build
 docker compose logs -f          # `ok` / `fail` per link, `live ok …` per tune-in
 ```
 
+### From the published image (no clone, no build)
+
+`ghcr.io/mfan88/htv:latest` is built by GitHub Actions on every push to `main` (amd64 and arm64). Save this as `docker-compose.yml` in an empty folder, put `HTV_TOKEN=<a long random string>` in a `.env` next to it, and run `docker compose up -d`. It needs Docker Compose 2.23.1 or newer (compose generates the MediaMTX config from `.env`). Only `HTV_TOKEN` is required; the rest are optional. `cpus:` caps how much CPU htv may use.
+
+```yaml
+services:
+  htv:
+    image: ghcr.io/mfan88/htv:latest
+    container_name: htv-server
+    restart: unless-stopped
+    ports:
+      - "${HTV_PORT:-8787}:8787"
+    environment:
+      HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
+      HTV_CONCURRENCY: ${HTV_CONCURRENCY:-3}
+      HTV_REFRESH_MIN: ${HTV_REFRESH_MIN:-5}
+      HTV_LOGOS: /logos
+      HTV_PRIORITY_TEAMS: ${HTV_PRIORITY_TEAMS:-}      # e.g. "edmonton,oilers"; empty = keep every game warm
+      HTV_PRIORITY_LEAD_MIN: ${HTV_PRIORITY_LEAD_MIN:-60}
+      HTV_DEMAND_MIN: ${HTV_DEMAND_MIN:-20}
+      HTV_IDLE_RECHECK_MIN: ${HTV_IDLE_RECHECK_MIN:-180}
+      HTV_IDLE_LINKS: ${HTV_IDLE_LINKS:-1}
+      HTV_EDGE_PUBLIC: ${HTV_EDGE_PUBLIC:-}
+      HTV_CHROMIUM_NICE: 15
+      HTV_DISABLE_GPU: "1"
+      HTV_BLOCK_HEAVY: "1"
+    volumes:
+      - ${HTV_LOGOS:-./logos}:/logos:ro   # optional AWAY_vs_HOME.png thumbnails
+      - ./htv-data:/data
+    cpus: 4                  # CPU cap; raise or lower to taste
+    cpu_shares: 256
+    shm_size: 512m
+
+  # MediaMTX is the single place IPTV apps (TiviMate, VLC) pull from: one pull per channel from htv,
+  # shared by every viewer. Playlist for it: http://<host>:8787/api/m3u-edge?token=<HTV_TOKEN>
+  mediamtx:
+    image: bluenviron/mediamtx:1.15.0   # pinned: newer releases require a session cookie that IPTV apps may not send
+    container_name: htv-mediamtx
+    restart: unless-stopped
+    depends_on:
+      - htv
+    ports:
+      - "${MTX_HLS_PORT:-8888}:8888"    # HLS: http://<host>:8888/ch_<id>/index.m3u8
+      - "${MTX_WEBRTC_PORT:-8889}:8889" # WebRTC page / signalling
+      - "8189:8189/udp"                 # WebRTC media
+    configs:
+      - source: mediamtx
+        target: /mediamtx.yml
+
+configs:
+  mediamtx:
+    content: |
+      logLevel: info
+      readTimeout: 30s    # htv can take a while to find a mirror on a cold channel
+      rtsp: no
+      rtmp: no
+      srt: no
+      api: no
+      metrics: no
+      pprof: no
+      playback: no
+      hls: yes
+      hlsAddress: :8888
+      hlsAlwaysRemux: no
+      hlsAllowOrigin: '*'
+      webrtc: yes
+      webrtcAddress: :8889
+      webrtcAllowOrigin: '*'
+      webrtcLocalUDPAddress: :8189
+      webrtcAdditionalHosts: [${HTV_RTC_HOST:-}]
+      paths:
+        "~^ch_([0-9a-f]+)$$":
+          source: http://htv:8787/live/$$G1.m3u8?token=${HTV_TOKEN}
+          sourceOnDemand: yes
+          sourceOnDemandStartTimeout: 30s
+          sourceOnDemandCloseAfter: 60s
+```
+
+Optional `.env` keys: `HTV_PRIORITY_TEAMS` (e.g. `edmonton,oilers`: only those teams' games are kept warm, empty keeps every game warm), `HTV_LOGOS` (thumbnail folder), `HTV_EDGE_PUBLIC` (`<source hostname>=<MediaMTX HLS URL>` for a public setup), `HTV_RTC_HOST` (public hostname of the WebRTC page).
+
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
 Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
