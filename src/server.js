@@ -229,7 +229,11 @@ const edgeUrl = req => {
 };
 
 async function liveList(req, res, format, edge = false) {
-  const list = livetv.games(state.data, checker.statuses());
+  const statuses = checker.statuses();
+  let list = livetv.games(state.data, statuses);
+  // The edge playlist hides channels whose mirrors all failed their check (unchecked ones stay),
+  // so MediaMTX doesn't list or pull dead streams.
+  if (edge) list = list.filter(g => !g.links.every(l => statuses[l] === "fail"));
   const labels = await nhlLabels();
   if (format === "m3u") {
     res.writeHead(200, { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store" });
