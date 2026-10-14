@@ -272,6 +272,10 @@ const current = new Map(); // channel id -> { link, capture, offset, end, sig, a
 const PLAYLIST_TIMEOUT_MS = +(process.env.HTV_PLAYLIST_TIMEOUT_SEC || 6) * 1000;
 const SEGMENT_TIMEOUT_MS = +(process.env.HTV_SEGMENT_TIMEOUT_SEC || 12) * 1000;
 const STALL_MIN_MS = +(process.env.HTV_STALL_SEC || 12) * 1000;
+// Jellyfin, MediaMTX and UHF each poll a channel every few seconds, and every poll costs an upstream playlist
+// fetch through the browser. Polls close together share one result, so each client sees the same window.
+const LIVE_SHARE_MS = +(process.env.HTV_LIVE_SHARE_MS || 1500);
+const liveShared = new Map(); // channel id -> { at (0 while resolving), p }
 const captureLink = new Map(); // capture id -> link, to blame the right one for a failed segment
 
 // A mirror's playlist as one media playlist (the best variant of a master), or null.
@@ -296,15 +300,26 @@ async function livePlaylist(capture) {
   return text;
 }
 
-// Renumber a mirror's playlist so sequence numbers never go backwards for the channel.
+// Renumber a mirror's playlist so sequence numbers never go backwards for the channel. A swap also resets
+// the timestamps, so the new mirror's first segment gets #EXT-X-DISCONTINUITY, and keeps it (entry.disc is
+// its renumbered sequence) on every later poll until it leaves the window: a player that polls again or
+// joins late must still see the break, or it reads the jump as continuous and freezes or repeats.
 function renumber(entry, text, switched) {
   const seq = +/#EXT-X-MEDIA-SEQUENCE:(\d+)/.exec(text)?.[1] || 0;
-  if (switched) entry.offset = Math.max(0, entry.end - seq);
+  if (switched) {
+    entry.offset = Math.max(0, entry.end - seq);
+    entry.disc = seq + entry.offset;
+  }
+  const first = seq + entry.offset;
   const count = (text.match(/^#EXTINF/gm) || []).length;
-  entry.end = Math.max(entry.end, seq + entry.offset + count);
+  entry.end = Math.max(entry.end, first + count);
   let out = text.replace(/#EXT-X-MEDIA-SEQUENCE:\d+\s*/, "");
-  out = out.replace(/(#EXT-X-TARGETDURATION:\d+)/, `$1\n#EXT-X-MEDIA-SEQUENCE:${seq + entry.offset}`);
-  return switched ? out.replace(/^#EXTINF/m, "#EXT-X-DISCONTINUITY\n#EXTINF") : out;
+  out = out.replace(/(#EXT-X-TARGETDURATION:\d+)/, `$1\n#EXT-X-MEDIA-SEQUENCE:${first}`);
+  if (entry.disc == null) return out;
+  const at = entry.disc - first;
+  if (at < 0) { entry.disc = null; return out; }
+  let n = -1;
+  return out.replace(/^#EXTINF/gm, m => (++n === at ? "#EXT-X-DISCONTINUITY\n" + m : m));
 }
 
 // A stream that fails (playlist or segment) is dropped from its channel; the next poll picks another mirror.
@@ -330,6 +345,30 @@ async function live(req, res, url) {
     if (fresh) schedule();
   }
 
+  // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.
+  let shared = liveShared.get(id);
+  if (!shared || (shared.at && Date.now() - shared.at >= LIVE_SHARE_MS)) {
+    const mine = shared = { at: 0, p: null };
+    mine.p = resolveLive(id, game, res).then(r => {
+      mine.at = Date.now();
+      if (!r && liveShared.get(id) === mine) liveShared.delete(id); // never share a failure
+      return r;
+    }, err => {
+      if (liveShared.get(id) === mine) liveShared.delete(id);
+      throw err;
+    });
+    liveShared.set(id, mine);
+  }
+  const r = await shared.p;
+  if (res.destroyed) return;
+  if (!r) return sendJson(res, 503, { error: "no working stream for this channel right now" });
+  res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" });
+  res.end(r);
+}
+
+// The playlist for channel `id` right now (renumbered), or null: the mirror already playing, else a
+// failover. `res` is the poll that triggered it; if that client hangs up, pending extractions are dropped.
+async function resolveLive(id, game, res) {
   let text = null, entry = current.get(id), switched = false;
   if (entry) {
     text = await livePlaylist(entry.capture).catch(() => null);
@@ -357,17 +396,16 @@ async function live(req, res, url) {
       if (capture && proxy.hasContext(capture.id) && await adopt(link, capture)) break;
     }
     if (!text) {
+      const statuses = checker.statuses();
       const rest = game.links.filter(l => !tried.has(l) && statuses[l] !== "fail");
       const links = (rest.length ? rest : game.links.filter(l => !tried.has(l))).slice(0, 3);
       const capture = await firstWorking(links, res);
       if (!res.destroyed && capture) await adopt(links.find(l => checker.recentCapture(l)?.id === capture.id) || links[0], capture);
     }
   }
-  if (res.destroyed) return;
+  if (res.destroyed) return null;
   log(`live ${text ? "ok  " : "fail"} ${game.name} · ${game.channel}${switched && text ? " (switched mirror)" : ""}`);
-  if (!text) return sendJson(res, 503, { error: "no working stream for this channel right now" });
-  res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" });
-  res.end(renumber(entry, text, switched));
+  return text ? renumber(entry, text, switched) : null;
 }
 
 /* ---------------- HTTP ---------------- */
