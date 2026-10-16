@@ -332,12 +332,48 @@ function renumber(entry, text, switched) {
   return out.replace(/^#EXTINF/gm, m => (++n === at ? "#EXT-X-DISCONTINUITY\n" + m : m));
 }
 
+// The playlist URL of a browser-only host carries a token that can expire. A mirror that was working and
+// now fails is first re-extracted from fresh pages (at most once per REFRESH_GAP_MS, so a link that is really
+// dead can't loop) and only marked down if that fails too.
+const REFRESH_GAP_MS = 30 * 1000;
+const canRefresh = e => engine.isBrowserOnly(e.capture.url) && Date.now() - e.refreshedAt > REFRESH_GAP_MS;
+
 // A stream that fails (playlist or segment) is dropped from its channel; the next poll picks another mirror.
-function markDown(id) {
+// `force` skips the refresh: the capture is already a refreshed one, or the refresh failed.
+function markDown(id, force = false) {
   const link = captureLink.get(id);
   if (!link) return;
+  const playing = [...current].filter(([, e]) => e.capture.id === id);
+  if (!force && playing.length && playing.every(([, e]) => canRefresh(e))) {
+    playing.forEach(([, e]) => (e.stale = true)); // the next poll re-extracts it
+    return;
+  }
   checker.record(link, "fail");
-  for (const [ch, e] of current) if (e.capture.id === id) { current.delete(ch); log(`down ${link}`); }
+  engine.pool.release(id);
+  for (const [ch, e] of playing) { current.delete(ch); log(`down ${link}`); }
+}
+
+// A fresh capture of the playing link, swapped into the channel; returns its playlist, or null.
+async function refreshCapture(entry, res) {
+  const ac = new AbortController();
+  const onClose = () => { if (!res.writableFinished) ac.abort(); };
+  res.on("close", onClose);
+  entry.refreshedAt = Date.now();
+  try {
+    const capture = await engine.extractVerified(entry.link, { signal: ac.signal });
+    if (!capture || ac.signal.aborted) return null;
+    captureLink.set(capture.id, entry.link);
+    const text = await livePlaylist(capture).catch(() => null);
+    if (!text) return null;
+    engine.pool.release(entry.capture.id);
+    entry.capture = capture;
+    entry.stale = false;
+    checker.record(entry.link, "ok", capture);
+    log(`refresh ${entry.link} (playlist stopped loading, took a fresh capture)`);
+    return text;
+  } finally {
+    res.off("close", onClose);
+  }
 }
 
 // Jellyfin tuning in to a channel (a feed of a game) or polling it: serve the playlist of a
@@ -377,11 +413,17 @@ async function live(req, res, url) {
 // The playlist for channel `id` right now (renumbered), or null: the mirror already playing, else a
 // failover. `res` is the poll that triggered it; if that client hangs up, pending extractions are dropped.
 async function resolveLive(id, game, res) {
-  let text = null, entry = current.get(id), switched = false;
+  let text = null, entry = current.get(id), switched = false, refreshed = false;
   if (entry) {
-    text = await livePlaylist(entry.capture).catch(() => null);
-    if (text && livetv.stalled(entry, text, Date.now(), STALL_MIN_MS)) { log(`stall ${entry.link}`); text = null; }
-    if (!text) markDown(entry.capture.id);
+    let stalled = false;
+    text = entry.stale ? null : await livePlaylist(entry.capture).catch(() => null);
+    if (text && livetv.stalled(entry, text, Date.now(), STALL_MIN_MS)) { log(`stall ${entry.link}`); text = null; stalled = true; }
+    // A frozen playlist is not an expired token; only a playlist that stopped loading is worth a refresh.
+    if (!text && !stalled && canRefresh(entry)) {
+      text = await refreshCapture(entry, res).catch(() => null);
+      if (text) switched = refreshed = true;
+    }
+    if (!text) markDown(entry.capture.id, true);
   }
   if (!text) {
     switched = !!entry;
@@ -393,7 +435,7 @@ async function resolveLive(id, game, res) {
       if (captureLink.size > 500) captureLink.delete(captureLink.keys().next().value);
       const t = await livePlaylist(capture).catch(() => null);
       if (!t) { checker.record(link, "fail"); return false; }
-      entry = { link, capture, offset: 0, end: prev, sig: null, advancedAt: Date.now() };
+      entry = { link, capture, offset: 0, end: prev, sig: null, advancedAt: Date.now(), refreshedAt: Date.now() };
       livetv.stalled(entry, t);
       current.set(id, entry);
       text = t;
@@ -413,7 +455,7 @@ async function resolveLive(id, game, res) {
     }
   }
   if (res.destroyed) return null;
-  log(`live ${text ? "ok  " : "fail"} ${game.name} · ${game.channel}${switched && text ? " (switched mirror)" : ""}`);
+  log(`live ${text ? "ok  " : "fail"} ${game.name} · ${game.channel}${refreshed && text ? " (refreshed)" : switched && text ? " (switched mirror)" : ""}`);
   return text ? renumber(entry, text, switched) : null;
 }
 

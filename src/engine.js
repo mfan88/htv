@@ -142,4 +142,6 @@ function nhlLinks(data) {
   return [...new Set(nhl.map(r => r.link))];
 }
 
-module.exports = { start, fetcher, extractVerified, nhlLinks, NHL_LEAGUES, pool };
+const isBrowserOnly = url => extractor.isBrowserOnly(url);
+
+module.exports = { start, fetcher, extractVerified, nhlLinks, NHL_LEAGUES, pool, isBrowserOnly };

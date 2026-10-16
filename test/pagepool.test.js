@@ -205,3 +205,14 @@ test("probeStatus with direct: true skips the page route", async () => {
   assert.deepEqual([r.ok, r.status], [false, 403]);
   assert.deepEqual(calls.browser, []);
 });
+
+test("release() closes one context's page right away", async () => {
+  const { pool, pages } = makePool(ok("#EXTM3U"));
+  await pool.fetch("a", "https://embed.st", "https://x/p.m3u8");
+  await pool.fetch("b", "https://embed.st", "https://x/p.m3u8");
+  pool.release("a");
+  assert.deepEqual(pool.keys(), ["b"]);
+  await new Promise(r => setImmediate(r));
+  assert.equal(pages[0].closed, true);
+  pool.closeAll();
+});

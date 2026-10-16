@@ -158,6 +158,7 @@ function create({ openPage, max = 3, idleMs = 60000, log = () => {} }) {
 
   return {
     fetch: fetchIn,
+    release: key => drop(key, "released"),
     size: () => entries.size,
     keys: () => [...entries.keys()],
     closeAll: () => { for (const key of [...entries.keys()]) drop(key, "shutdown"); clearInterval(sweep); },
