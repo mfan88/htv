@@ -50,15 +50,19 @@ function upstream(fetcher, id, target, extra = {}, timeout = 15000) {
   });
 }
 
-// True if the captured playlist actually loads (a request being made doesn't mean it works).
-async function probe(fetcher, id, url) {
+// { ok, status } for the captured playlist (a request being made doesn't mean it works); status is 0 on a
+// network error.
+async function probeStatus(fetcher, id, url) {
   try {
     const res = await upstream(fetcher, id, url);
-    return res.ok() && (await res.text()).trimStart().startsWith("#EXTM3U");
+    return { ok: res.ok() && (await res.text()).trimStart().startsWith("#EXTM3U"), status: res.status() };
   } catch {
-    return false;
+    return { ok: false, status: 0 };
   }
 }
+
+// True if the captured playlist actually loads.
+const probe = async (fetcher, id, url) => (await probeStatus(fetcher, id, url)).ok;
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
 
@@ -121,4 +125,4 @@ async function respond(fetcher, id, target, range, wrap, timeout = 15000) {
   return new Response(empty ? null : body, { status: res.status(), headers: outHeaders });
 }
 
-module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe, isPlaylist };
+module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe, probeStatus, isPlaylist };

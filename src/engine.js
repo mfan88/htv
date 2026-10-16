@@ -70,6 +70,7 @@ const ready = () => (starting ||= launch().catch(err => { starting = null; throw
 
 async function start(dir) {
   dataDir = dir;
+  extractor.loadBrowserOnly(dir);
   await ready();
   checker.init(extractVerified);
 }
@@ -84,11 +85,12 @@ async function fetcher() {
 // loads, the link is alive and no page needs to be opened.
 async function extractVerified(link, { prior, ...opts } = {}) {
   const { context, blocker } = await ready();
-  if (prior && proxy.hasContext(prior.id) && await proxy.probe(context.request, prior.id, prior.url)) return prior;
+  // A browser-only host's playlist can't be probed with the request API; it is re-extracted instead.
+  if (prior && proxy.hasContext(prior.id) && !extractor.isBrowserOnly(prior.url) && await proxy.probe(context.request, prior.id, prior.url)) return prior;
   const capture = await extractor.extract(context, blocker, link, opts);
   if (!capture) return null;
   const id = proxy.addContext(capture.headers);
-  return (await proxy.probe(context.request, id, capture.url)) ? { ...capture, id } : null;
+  return (await extractor.verify(capture, url => proxy.probeStatus(context.request, id, url))) ? { ...capture, id } : null;
 }
 
 // Unique NHL / NHL Preseason links in a scrape result.

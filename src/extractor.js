@@ -4,6 +4,9 @@
 // Two loads race each other: onhockey's own wrapper page (some hosts only play when
 // framed by onhockey.tv) and the bare embed (some players only work top-level).
 
+const fs = require("fs");
+const path = require("path");
+
 const PLAYLIST_RE = /\.m3u8(\?|$)|mpegurl/i;
 const TIMEOUT_MS = 25000;
 const CLICK_AT_MS = [5000, 10000, 15000]; // nudge players that wait for a click on "play"
@@ -54,6 +57,71 @@ function recordWin(link, via) {
   if (w[via] === WIN_MIN && !w[via === "wrapper" ? "bare" : "wrapper"]) console.log(`${host}: only the ${via} load wins, opening just that`);
 }
 
+// Stream hosts (the host of the playlist URL, not the embed's) that answer the page but refuse the
+// request API with 401/403 (they seem to fingerprint the client). Their links count as working when
+// the page itself got a playlist, and the failing probe is skipped. Every RELEARN_EVERY-th extraction
+// of such a host probes again in case that changed. Persisted under HTV_DATA so a restart doesn't relearn.
+const browserOnly = new Map(); // stream host -> { n, since }
+let browserOnlyFile = null;
+const streamHost = url => { try { return new URL(url).host; } catch { return ""; } };
+
+function loadBrowserOnly(dataDir) {
+  browserOnlyFile = path.join(dataDir, "browser-hosts.json");
+  try {
+    for (const [host, v] of Object.entries(JSON.parse(fs.readFileSync(browserOnlyFile, "utf8")))) browserOnly.set(host, { n: 0, since: v?.since });
+  } catch {}
+}
+
+function saveBrowserOnly() {
+  if (!browserOnlyFile) return;
+  const out = Object.fromEntries([...browserOnly].map(([h, v]) => [h, { since: v.since }]));
+  try { fs.writeFileSync(browserOnlyFile, JSON.stringify(out, null, 1)); } catch (err) { console.error("could not save browser-only hosts:", err.message); }
+}
+
+// Does the capture's playlist really load? `probe(url)` -> { ok, status } fetches it with the request API.
+// The page's own answer (capture.page, seen by the extractor) decides for browser-only hosts.
+async function verify(capture, probe) {
+  const host = streamHost(capture.url);
+  const seen = !!capture.page?.playlist;
+  const flagged = browserOnly.get(host);
+  if (flagged) {
+    if (++flagged.n % RELEARN_EVERY) return seen;
+    const r = await probe(capture.url);
+    if (r.ok) {
+      browserOnly.delete(host);
+      saveBrowserOnly();
+      console.log(`${host}: the request API works again, no longer browser-only`);
+      return true;
+    }
+    return seen;
+  }
+  const r = await probe(capture.url);
+  if (r.ok) return true;
+  if ((r.status === 401 || r.status === 403) && seen) {
+    browserOnly.set(host, { n: 0, since: new Date().toISOString() });
+    saveBrowserOnly();
+    console.log(`${host}: the page loads the playlist but the request API gets ${r.status}, only the browser can fetch it`);
+    return true;
+  }
+  return false;
+}
+
+const isBrowserOnly = url => browserOnly.has(streamHost(url));
+
+// What the page itself got for its playlist request: { status, playlist }, or null if it never
+// answered in time (the check then falls back to the request API alone).
+async function ownResponse(req) {
+  const read = async () => {
+    const res = await req.response();
+    if (!res) return null;
+    const text = await res.text().catch(() => "");
+    return { status: res.status(), playlist: text.trimStart().startsWith("#EXTM3U") };
+  };
+  let timer;
+  const late = new Promise(r => (timer = setTimeout(r, 4000, null)));
+  return Promise.race([read().catch(() => null), late]).finally(() => clearTimeout(timer));
+}
+
 async function openHidden(context, blocker, url, job, via) {
   const page = await context.newPage();
   open.set(page, Date.now());
@@ -81,7 +149,8 @@ async function openHidden(context, blocker, url, job, via) {
     if (!all) return;
     const headers = {};
     for (const [k, v] of Object.entries(all)) if (!SKIP_HEADERS.test(k)) headers[k] = v;
-    job.finish({ url: req.url(), headers }, via);
+    const seen = await ownResponse(req);
+    job.finish({ url: req.url(), headers, page: seen }, via);
   });
 
   for (const ms of CLICK_AT_MS) {
@@ -102,7 +171,7 @@ async function openHidden(context, blocker, url, job, via) {
   page.goto(url, { referer: ONHOCKEY, waitUntil: "commit", timeout: TIMEOUT_MS }).catch(() => {});
 }
 
-// Returns { url, headers } for the stream's playlist, or null if none was found.
+// Returns { url, headers, page } (page: what the page itself got, see ownResponse) for the stream's playlist, or null if none was found.
 // `link` is the trimmed link (no scheme), e.g. "embed.st/embed/golf/1779/1".
 // Several extractions can run at once; pass an AbortSignal to stop one early.
 function extract(context, blocker, link, { signal } = {}) {
@@ -130,4 +199,4 @@ function extract(context, blocker, link, { signal } = {}) {
   });
 }
 
-module.exports = { extract, wrapperUrl };
+module.exports = { extract, wrapperUrl, verify, isBrowserOnly, streamHost, loadBrowserOnly, browserOnly };
