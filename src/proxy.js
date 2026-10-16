@@ -40,21 +40,31 @@ function isPlaylist(url, contentType) {
   return /\.m3u8(\?|$)/i.test(url) || /mpegurl/i.test(contentType);
 }
 
-// Upstream fetch with the captured headers; `extra` (e.g. Range) wins over them.
-function upstream(fetcher, id, target, extra = {}, timeout = 15000) {
-  return fetcher.fetch(target, {
-    headers: { ...contexts.get(id), ...extra },
-    timeout,
-    maxRedirects: 5,
-    failOnStatusCode: false,
-  });
+// Stream hosts that refuse the request API but answer a real browser page (see extractor.js). engine.js sets
+//   { isHost(url), segmentsViaBrowser(url), markSegments(url), fetch(id, url, headers, timeoutMs) }
+// Playlists of such hosts are fetched in a page. Segments go through the request API first and only
+// move to the page for a host whose segments answer 401/403 too.
+let browser = null;
+const useBrowser = b => { browser = b; };
+
+// Upstream fetch with the captured headers; `extra` (e.g. Range) wins over them. `direct` skips the page route
+// (to test whether the request API works for a host again).
+async function upstream(fetcher, id, target, extra = {}, timeout = 15000, direct = false) {
+  const headers = { ...contexts.get(id), ...extra };
+  const plain = () => fetcher.fetch(target, { headers, timeout, maxRedirects: 5, failOnStatusCode: false });
+  if (direct || !browser?.isHost(target)) return plain();
+  if (isPlaylist(target, "") || browser.segmentsViaBrowser(target)) return browser.fetch(id, target, headers, timeout);
+  const res = await plain();
+  if (res.status() !== 401 && res.status() !== 403) return res;
+  browser.markSegments(target);
+  return browser.fetch(id, target, headers, timeout);
 }
 
 // { ok, status } for the captured playlist (a request being made doesn't mean it works); status is 0 on a
 // network error.
-async function probeStatus(fetcher, id, url) {
+async function probeStatus(fetcher, id, url, { direct = false } = {}) {
   try {
-    const res = await upstream(fetcher, id, url);
+    const res = await upstream(fetcher, id, url, {}, 15000, direct);
     return { ok: res.ok() && (await res.text()).trimStart().startsWith("#EXTM3U"), status: res.status() };
   } catch {
     return { ok: false, status: 0 };
@@ -125,4 +135,4 @@ async function respond(fetcher, id, target, range, wrap, timeout = 15000) {
   return new Response(empty ? null : body, { status: res.status(), headers: outHeaders });
 }
 
-module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe, probeStatus, isPlaylist };
+module.exports = { addContext, hasContext: id => contexts.has(id), respond, rewritePlaylist, probe, probeStatus, isPlaylist, useBrowser, headersOf: id => contexts.get(id) };

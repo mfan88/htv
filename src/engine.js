@@ -9,6 +9,7 @@ const { PlaywrightBlocker } = require("@ghostery/adblocker-playwright");
 const extractor = require("./extractor");
 const checker = require("./checker");
 const proxy = require("./proxy");
+const pagepool = require("./pagepool");
 
 const NHL_LEAGUES = ["nhl", "nhl preseason"];
 
@@ -68,9 +69,51 @@ async function launch() {
 
 const ready = () => (starting ||= launch().catch(err => { starting = null; throw err; }));
 
+// Pages that fetch playlists for browser-only stream hosts. Each is a stub document at the embed's origin (no
+// player), so one costs little; HTV_BROWSER_PAGES caps them. Total Chromium pages are therefore at most
+// 2 x HTV_CONCURRENCY (link checks) + the pages of tunes in progress (up to 6 each, as before) + HTV_BROWSER_PAGES.
+const STUB_PATH = "/__htv_pool__";
+const pool = pagepool.create({
+  max: Math.max(1, +(process.env.HTV_BROWSER_PAGES || 3)),
+  idleMs: Math.max(1, +(process.env.HTV_BROWSER_PAGE_IDLE_SEC || 60)) * 1000,
+  log: m => console.log(m),
+  async openPage(origin) {
+    const { context } = await ready();
+    const page = await context.newPage();
+    try {
+      await page.route(origin + STUB_PATH, r => r.fulfill({ contentType: "text/html", body: "<!doctype html><title>htv</title>" }));
+      await page.goto(origin + STUB_PATH, { waitUntil: "commit", timeout: 10000 });
+    } catch (err) {
+      await page.close().catch(() => {});
+      throw err;
+    }
+    return page;
+  },
+});
+
+// Segment hosts that also answer 401/403 to the request API (so their segments are fetched in the page too).
+const segmentHosts = new Set();
+const originOf = (headers, url) => {
+  for (const v of [headers.origin, headers.referer]) { try { if (v) return new URL(v).origin; } catch {} }
+  return new URL(url).origin;
+};
+
 async function start(dir) {
   dataDir = dir;
   extractor.loadBrowserOnly(dir);
+  proxy.useBrowser({
+    isHost: url => extractor.isBrowserOnly(url),
+    segmentsViaBrowser: url => segmentHosts.has(extractor.streamHost(url)),
+    markSegments(url) {
+      const host = extractor.streamHost(url);
+      if (!segmentHosts.has(host)) { segmentHosts.add(host); console.log(`${host}: segments need the browser too`); }
+    },
+    fetch: (id, url, headers, timeoutMs) => pool.fetch(id, originOf(headers, url), url, { headers, timeoutMs }),
+  });
+  if (process.env.HTV_LOG_PAGES === "1") {
+    // Measuring aid: Chromium pages open right now (all of them, pool included).
+    setInterval(() => ready().then(({ context }) => console.log(`chromium pages: ${context.pages().length} (pool ${pool.size()})`)).catch(() => {}), 5000).unref();
+  }
   await ready();
   checker.init(extractVerified);
 }
@@ -90,7 +133,7 @@ async function extractVerified(link, { prior, ...opts } = {}) {
   const capture = await extractor.extract(context, blocker, link, opts);
   if (!capture) return null;
   const id = proxy.addContext(capture.headers);
-  return (await extractor.verify(capture, url => proxy.probeStatus(context.request, id, url))) ? { ...capture, id } : null;
+  return (await extractor.verify(capture, url => proxy.probeStatus(context.request, id, url, { direct: true }))) ? { ...capture, id } : null;
 }
 
 // Unique NHL / NHL Preseason links in a scrape result.
@@ -99,4 +142,4 @@ function nhlLinks(data) {
   return [...new Set(nhl.map(r => r.link))];
 }
 
-module.exports = { start, fetcher, extractVerified, nhlLinks, NHL_LEAGUES };
+module.exports = { start, fetcher, extractVerified, nhlLinks, NHL_LEAGUES, pool };

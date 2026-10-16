@@ -14,6 +14,8 @@
 //   HTV_FAIL_BACKOFF_AFTER    consecutive failures before a link is backed off (default 3)
 //   HTV_FAIL_BACKOFF_MAX_MIN  longest backoff in minutes; the delays grow 10, 30, 60 (default 60)
 //   HTV_FAIL_DEMAND_RETRY_SEC a backed-off link someone tuned is still tried this often (default 120)
+//   HTV_BROWSER_PAGES         open pages that fetch for browser-only stream hosts, most (default 3)
+//   HTV_BROWSER_PAGE_IDLE_SEC close such a page after this long unused (default 60)
 
 const path = require("path");
 const fs = require("fs");

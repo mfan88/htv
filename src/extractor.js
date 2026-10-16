@@ -98,9 +98,11 @@ async function verify(capture, probe) {
   const r = await probe(capture.url);
   if (r.ok) return true;
   if ((r.status === 401 || r.status === 403) && seen) {
-    browserOnly.set(host, { n: 0, since: new Date().toISOString() });
-    saveBrowserOnly();
-    console.log(`${host}: the page loads the playlist but the request API gets ${r.status}, only the browser can fetch it`);
+    if (!browserOnly.has(host)) { // a concurrent check may have flagged it while this one probed
+      browserOnly.set(host, { n: 0, since: new Date().toISOString() });
+      saveBrowserOnly();
+      console.log(`${host}: the page loads the playlist but the request API gets ${r.status}, only the browser can fetch it`);
+    }
     return true;
   }
   return false;
