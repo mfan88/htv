@@ -11,6 +11,9 @@
 //   HTV_DATA         data directory for caches (default ./htv-data)
 //   HTV_CONCURRENCY  links checked at once (default 3)
 //   HTV_REFRESH_MIN  minutes between schedule scrapes (default 5)
+//   HTV_FAIL_BACKOFF_AFTER    consecutive failures before a link is backed off (default 3)
+//   HTV_FAIL_BACKOFF_MAX_MIN  longest backoff in minutes; the delays grow 10, 30, 60 (default 60)
+//   HTV_FAIL_DEMAND_RETRY_SEC a backed-off link someone tuned is still tried this often (default 120)
 
 const path = require("path");
 const fs = require("fs");
@@ -90,7 +93,11 @@ function schedule() {
   }
   if (hot.size !== lastHot) log(`mode: ${hot.size ? `warm, keeping ${hot.size} links hot` : "idle"}`);
   lastHot = hot.size;
-  checker.check(links, { hot, idleMs: IDLE_MS });
+  // Links of games someone tuned recently: a link that keeps failing is still retried for them (rarely).
+  const watched = new Set();
+  const now = Date.now();
+  for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => watched.add(l));
+  checker.check(links, { hot, idleMs: IDLE_MS, demand: watched });
 }
 
 function authorized(req, url) {
@@ -250,6 +257,7 @@ async function firstWorking(links, res) {
   res.on("close", () => { if (!res.writableFinished) controllers.forEach(c => c.abort()); });
   try {
     return await Promise.any(links.map(async (link, i) => {
+      checker.noteTry(link);
       const capture = await engine.extractVerified(link, { signal: controllers[i].signal });
       if (controllers[i].signal.aborted) throw new Error("cancelled");
       checker.record(link, capture ? "ok" : "fail", capture);
@@ -339,11 +347,9 @@ async function live(req, res, url) {
   const game = livetv.games(state.data, statuses).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
   // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
-  if (PRIORITY.length) {
-    const fresh = Date.now() - (demand.get(demandKey(game)) || 0) > DEMAND_MS;
-    demand.set(demandKey(game), Date.now());
-    if (fresh) schedule();
-  }
+  const fresh = Date.now() - (demand.get(demandKey(game)) || 0) > DEMAND_MS;
+  demand.set(demandKey(game), Date.now());
+  if (PRIORITY.length && fresh) schedule();
 
   // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.
   let shared = liveShared.get(id);
@@ -398,7 +404,8 @@ async function resolveLive(id, game, res) {
     if (!text) {
       const statuses = checker.statuses();
       const rest = game.links.filter(l => !tried.has(l) && statuses[l] !== "fail");
-      const links = (rest.length ? rest : game.links.filter(l => !tried.has(l))).slice(0, 3);
+      // Links backed off after repeated failures are skipped unless their short retry interval has passed.
+      const links = (rest.length ? rest : game.links.filter(l => !tried.has(l))).filter(l => checker.mayTry(l, true)).slice(0, 3);
       const capture = await firstWorking(links, res);
       if (!res.destroyed && capture) await adopt(links.find(l => checker.recentCapture(l)?.id === capture.id) || links[0], capture);
     }
@@ -445,6 +452,9 @@ function startHttp() {
 (async () => {
   checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 3));
   checker.onStatusChange((link, status) => { if (status !== "checking") log(`${status.padEnd(4)} ${link}`); });
+  checker.onBackoff((link, fails, min) => log(fails
+    ? `backoff ${link}: failed ${fails} times in a row, next check in ${min} min`
+    : `backoff over ${link}`));
   await engine.start(DATA);
   startHttp();
   await refresh();

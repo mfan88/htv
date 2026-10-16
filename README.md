@@ -45,6 +45,8 @@ services:
       HTV_PLAYLIST_TIMEOUT_SEC: 6          # slower than this counts as a dead mirror
       HTV_SEGMENT_TIMEOUT_SEC: 12
       HTV_STALL_SEC: 12                    # a playlist frozen this long counts as dead
+      HTV_FAIL_BACKOFF_AFTER: 3            # failed checks in a row before a link is skipped for 10, 30, then 60 min
+      HTV_FAIL_BACKOFF_MAX_MIN: 60         # longest skip
       HTV_CHROMIUM_NICE: 15                # link-check browser CPU priority (0 = off)
       HTV_DISABLE_GPU: "1"
       HTV_BLOCK_HEAVY: "1"                 # link checks skip images/fonts/video
@@ -106,7 +108,7 @@ configs:
 
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
-Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
+Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Failing links: `HTV_FAIL_BACKOFF_AFTER` (3; after this many failed checks in a row a link is skipped for 10, then 30, then 60 minutes, any success resets it), `HTV_FAIL_BACKOFF_MAX_MIN` (60; longest skip) and `HTV_FAIL_DEMAND_RETRY_SEC` (120; a backed-off link someone is watching is still retried this often). Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
 
 To publish it, put a reverse proxy in front (Caddy: `reverse_proxy 127.0.0.1:8787 { flush_interval -1 }` so streams aren't buffered).
 

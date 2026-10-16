@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "scrape": "node src/scraper.js"
+    "scrape": "node src/scraper.js",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "hockey",
