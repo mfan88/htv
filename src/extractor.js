@@ -63,12 +63,13 @@ function recordWin(link, via) {
 // of such a host probes again in case that changed. Persisted under HTV_DATA so a restart doesn't relearn.
 const browserOnly = new Map(); // stream host -> { n, since }
 let browserOnlyFile = null;
-const streamHost = url => { try { return new URL(url).host; } catch { return ""; } };
+// Load-balancer names rotate per load (lb13.strmd.st, lb27.strmd.st...), and each behaves alike, so they share one entry.
+const streamHost = url => { try { return new URL(url).host.replace(/^lb\d+\./i, "lb*."); } catch { return ""; } };
 
 function loadBrowserOnly(dataDir) {
   browserOnlyFile = path.join(dataDir, "browser-hosts.json");
   try {
-    for (const [host, v] of Object.entries(JSON.parse(fs.readFileSync(browserOnlyFile, "utf8")))) browserOnly.set(host, { n: 0, since: v?.since });
+    for (const [host, v] of Object.entries(JSON.parse(fs.readFileSync(browserOnlyFile, "utf8")))) browserOnly.set(streamHost("https://" + host), { n: 0, since: v?.since });
   } catch {}
 }
 

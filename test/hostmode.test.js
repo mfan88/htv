@@ -22,17 +22,19 @@ test("page got a playlist but the probe got 403: working, and the stream host is
   const p = probe(403);
   assert.equal(await extractor.verify(cap(1), p), true);
   assert.equal(extractor.isBrowserOnly(url(1)), true);
-  assert.equal(extractor.isBrowserOnly(url(2)), false, "per stream host, not per embed host");
+  assert.equal(extractor.isBrowserOnly(url(2)), true, "lbNN names share one entry");
+  assert.equal(extractor.isBrowserOnly("https://dlive.sx/p.m3u8"), false, "other hosts are separate");
   assert.equal(log.mock.calls.length, 1);
-  assert.match(log.mock.calls[0].arguments[0], /^lb1\.strmd\.st: .*403/);
+  assert.match(log.mock.calls[0].arguments[0], /^lb\*\.strmd\.st: .*403/);
 });
 
 test("401 flags too; other failures do not", async () => {
-  assert.equal(await extractor.verify(cap(1), probe(401)), true);
-  assert.equal(await extractor.verify(cap(2), probe(500)), false);
-  assert.equal(await extractor.verify(cap(3), probe(0)), false);
-  assert.equal(extractor.isBrowserOnly(url(2)), false);
-  assert.equal(extractor.isBrowserOnly(url(3)), false);
+  assert.equal(await extractor.verify({ ...cap(1), url: "https://a.example/p.m3u8" }, probe(401)), true);
+  assert.equal(await extractor.verify({ ...cap(2), url: "https://b.example/p.m3u8" }, probe(500)), false);
+  assert.equal(await extractor.verify({ ...cap(3), url: "https://c.example/p.m3u8" }, probe(0)), false);
+  assert.equal(extractor.isBrowserOnly("https://a.example/x"), true);
+  assert.equal(extractor.isBrowserOnly("https://b.example/x"), false);
+  assert.equal(extractor.isBrowserOnly("https://c.example/x"), false);
 });
 
 test("a 403 is not flagged when the page itself got no playlist (a dead mirror)", async () => {
@@ -63,7 +65,7 @@ test("a relearn probe that works drops the flag and logs it", async t => {
   assert.equal(extractor.isBrowserOnly(url(1)), true);
   assert.equal(await extractor.verify(cap(1), probe(200)), true); // 8th: probes
   assert.equal(extractor.isBrowserOnly(url(1)), false);
-  assert.match(log.mock.calls.at(-1).arguments[0], /^lb1\.strmd\.st: .*no longer browser-only/);
+  assert.match(log.mock.calls.at(-1).arguments[0], /^lb\*\.strmd\.st: .*no longer browser-only/);
 });
 
 test("flagged hosts are saved under the data dir and reloaded", async t => {
@@ -72,7 +74,7 @@ test("flagged hosts are saved under the data dir and reloaded", async t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   extractor.loadBrowserOnly(dir);
   await extractor.verify(cap(1), probe(403));
-  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "browser-hosts.json"), "utf8"))), ["lb1.strmd.st"]);
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, "browser-hosts.json"), "utf8"))), ["lb*.strmd.st"]);
   extractor.browserOnly.clear();
   extractor.loadBrowserOnly(dir);
   assert.equal(extractor.isBrowserOnly(url(1)), true);
