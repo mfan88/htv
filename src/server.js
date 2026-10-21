@@ -43,7 +43,7 @@ const VERSION = require("../package.json").version;
 // before a game starts until an hour after it ends, and for a game someone tuned within HTV_DEMAND_MIN.
 // Outside that nothing is checked at all (no Chromium pages): a tune extracts on demand. While warm, each
 // channel keeps only its best HTV_WARM_LINKS mirrors checked (0 = all); more are tried if those fail.
-const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 30) * 60 * 1000;
+const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 60) * 60 * 1000;
 const DEMAND_MS = +(process.env.HTV_DEMAND_MIN || 20) * 60 * 1000;
 const WARM_LINKS = +(process.env.HTV_WARM_LINKS ?? 3);
 // Tuning a channel keeps that channel's mirrors warm (they are what failover switches between), not every

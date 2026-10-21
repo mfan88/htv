@@ -38,7 +38,7 @@ services:
       HTV_CONCURRENCY: 2                   # link checks at once
       HTV_REFRESH_MIN: 5                   # minutes between schedule scrapes
       HTV_TEAM: EDM                        # the only team scraped and served (NHL abbreviation)
-      HTV_PRIORITY_LEAD_MIN: 30            # warm window opens this long before puck drop
+      HTV_PRIORITY_LEAD_MIN: 60            # warm window opens this long before puck drop
       HTV_DEMAND_MIN: 20                   # a channel someone tuned stays warm this long
       HTV_WARM_LINKS: 3                    # mirrors per channel kept checked while warm (0 = all)
       HTV_IDLE_REFRESH_MIN: 30             # schedule scrape interval when no game is within 3 h
