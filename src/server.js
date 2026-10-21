@@ -9,8 +9,11 @@
 //   HTV_HOST         address to bind (default 0.0.0.0)
 //   HTV_TOKEN        if set, requests need "Authorization: Bearer <token>" or ?token=<token>
 //   HTV_DATA         data directory for caches (default ./htv-data)
-//   HTV_CONCURRENCY  links checked at once (default 3)
-//   HTV_REFRESH_MIN  minutes between schedule scrapes (default 5)
+//   HTV_CONCURRENCY  links checked at once (default 2)
+//   HTV_TEAM         the one team to serve, NHL abbreviation (default EDM)
+//   HTV_REFRESH_MIN  minutes between schedule scrapes near a game (default 5)
+//   HTV_IDLE_REFRESH_MIN  minutes between scrapes when no game is within 3 h (default 30)
+//   HTV_WARM_LINKS   mirrors per channel kept checked while a game is near (default 3, 0 = all)
 //   HTV_FAIL_BACKOFF_AFTER    consecutive failures before a link is backed off (default 3)
 //   HTV_FAIL_BACKOFF_MAX_MIN  longest backoff in minutes; the delays grow 10, 30, 60 (default 60)
 //   HTV_FAIL_DEMAND_RETRY_SEC a backed-off link someone tuned is still tried this often (default 120)
@@ -36,20 +39,15 @@ const TOKEN = process.env.HTV_TOKEN || "";
 const REFRESH_MS = +(process.env.HTV_REFRESH_MIN || 5) * 60 * 1000;
 const VERSION = require("../package.json").version;
 
-// Check scheduling. With HTV_PRIORITY_TEAMS set, links are only kept warm (rechecked every few
-// minutes) for those teams' games from HTV_PRIORITY_LEAD_MIN before the start until an hour after
-// the end, and for any game someone tuned within HTV_DEMAND_MIN. Everything else is rechecked
-// every HTV_IDLE_RECHECK_MIN. Unset, every game is kept warm as before.
-const PRIORITY = (process.env.HTV_PRIORITY_TEAMS || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
-const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 60) * 60 * 1000;
+// Check scheduling. Links are only kept warm (rechecked every few minutes) from HTV_PRIORITY_LEAD_MIN
+// before a game starts until an hour after it ends, and for a game someone tuned within HTV_DEMAND_MIN.
+// Outside that nothing is checked at all (no Chromium pages): a tune extracts on demand. While warm, each
+// channel keeps only its best HTV_WARM_LINKS mirrors checked (0 = all); more are tried if those fail.
+const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 30) * 60 * 1000;
 const DEMAND_MS = +(process.env.HTV_DEMAND_MIN || 20) * 60 * 1000;
-// Outside the warm window each channel keeps only its first HTV_IDLE_LINKS mirrors in the checker
-// (default 1; 0 = check them all). The rest aren't probed until the game turns hot or is tuned.
-const IDLE_LINKS = +(process.env.HTV_IDLE_LINKS ?? 1);
-const IDLE_MS = process.env.HTV_IDLE_RECHECK_MIN ? +process.env.HTV_IDLE_RECHECK_MIN * 60 * 1000 : undefined;
+const WARM_LINKS = +(process.env.HTV_WARM_LINKS ?? 3);
 // Tuning a channel keeps that channel's mirrors warm (they are what failover switches between), not every
-// feed of the game: a game has dozens of mirrors and rechecking them all is what loads the CPU. HTV_DEMAND_SCOPE=game
-// restores the old behaviour (every feed of a tuned game stays warm, so changing feed is instant).
+// feed of the game. HTV_DEMAND_SCOPE=game restores the old behaviour (every feed of a tuned game stays warm).
 const DEMAND_BY_GAME = process.env.HTV_DEMAND_SCOPE === "game";
 const demandKey = g => (DEMAND_BY_GAME ? g.gameId : g.id);
 const demand = new Map(); // channel id (or game id) -> last tune time
@@ -64,6 +62,9 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 const state = { data: null, error: null, scrapedAt: null, startedAt: new Date().toISOString() };
 const streamsFile = () => path.join(DATA, "streams.json");
 
+// The scrape is the only periodic network work when no game is near, so it slows down then: every
+// REFRESH_MS from 3 h before a game until it ends, else every HTV_IDLE_REFRESH_MIN.
+const IDLE_REFRESH_MS = +(process.env.HTV_IDLE_REFRESH_MIN || 30) * 60 * 1000;
 async function refresh() {
   try {
     state.data = await scraper.scrape(streamsFile());
@@ -78,28 +79,25 @@ async function refresh() {
   }
   schedule();
   log(`schedule: ${state.data?.streams?.length ?? 0} links, ${engine.nhlLinks(state.data).length} NHL`);
+  const near = livetv.hotLinks(state.data, { leadMs: 3 * 60 * 60 * 1000 }).size > 0;
+  setTimeout(refresh, state.error || near ? REFRESH_MS : IDLE_REFRESH_MS).unref?.();
 }
 
 let lastHot = -1;
 function schedule() {
-  const hot = livetv.hotLinks(state.data, PRIORITY.length ? { teams: PRIORITY, leadMs: LEAD_MS } : {});
-  if (PRIORITY.length) {
-    const now = Date.now();
-    for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => hot.add(l));
-  }
-  let links = engine.nhlLinks(state.data);
-  if (PRIORITY.length && IDLE_LINKS > 0) {
-    const keep = new Set(hot);
-    for (const g of livetv.games(state.data)) g.links.slice(0, IDLE_LINKS).forEach(l => keep.add(l));
-    links = links.filter(l => keep.has(l));
-  }
-  if (hot.size !== lastHot) log(`mode: ${hot.size ? `warm, keeping ${hot.size} links hot` : "idle"}`);
-  lastHot = hot.size;
-  // Links of games someone tuned recently: a link that keeps failing is still retried for them (rarely).
-  const watched = new Set();
   const now = Date.now();
-  for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => watched.add(l));
-  checker.check(links, { hot, idleMs: IDLE_MS, demand: watched });
+  const hot = livetv.hotLinks(state.data, { leadMs: LEAD_MS });
+  const warm = new Set(), watched = new Set();
+  for (const g of livetv.games(state.data, checker.statuses())) {
+    const tuned = now - (demand.get(demandKey(g)) || 0) < DEMAND_MS;
+    if (tuned) g.links.forEach(l => watched.add(l));
+    if (!tuned && !g.links.some(l => hot.has(l))) continue;
+    // games() ranks working mirrors first, then unchecked ones, then failed ones.
+    (WARM_LINKS > 0 ? g.links.slice(0, WARM_LINKS) : g.links).forEach(l => warm.add(l));
+  }
+  if (warm.size !== lastHot) log(`mode: ${warm.size ? `warm, keeping ${warm.size} links hot` : "idle"}`);
+  lastHot = warm.size;
+  checker.check([...warm], { hot: warm, demand: watched });
 }
 
 function authorized(req, url) {
@@ -387,7 +385,7 @@ async function live(req, res, url) {
   // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
   const fresh = Date.now() - (demand.get(demandKey(game)) || 0) > DEMAND_MS;
   demand.set(demandKey(game), Date.now());
-  if (PRIORITY.length && fresh) schedule();
+  if (fresh) schedule();
 
   // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.
   let shared = liveShared.get(id);
@@ -494,7 +492,7 @@ function startHttp() {
 }
 
 (async () => {
-  checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 3));
+  checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 2));
   checker.onStatusChange((link, status) => { if (status !== "checking") log(`${status.padEnd(4)} ${link}`); });
   checker.onBackoff((link, fails, min) => log(fails
     ? `backoff ${link}: failed ${fails} times in a row, next check in ${min} min`
@@ -502,6 +500,5 @@ function startHttp() {
   await engine.start(DATA);
   startHttp();
   await refresh();
-  setInterval(refresh, REFRESH_MS);
-  setInterval(schedule, 60 * 1000); // hot links are due every 3 min; the scrape only runs every few
+  setInterval(schedule, 60 * 1000); // hot links are due every 5 min; the scrape runs on its own timer
 })();

@@ -10,16 +10,17 @@ services:
     environment:
       # Put HTV_TOKEN=<random string> in .env next to this file (git-ignored).
       HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
-      HTV_CONCURRENCY: 3      # links checked at once
+      HTV_CONCURRENCY: 2      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
       HTV_LOGOS: /logos       # thumbnails folder (the mount below)
-      # Idle by default: links are rechecked every 3 h. Oilers games are kept warm from 1 h before
-      # puck drop until 1 h after the end, and any game someone tunes stays warm for 20 min.
-      HTV_PRIORITY_TEAMS: "edmonton,oilers"
-      HTV_PRIORITY_LEAD_MIN: 60
+      # Only the Oilers are scraped and served (HTV_TEAM, default EDM). Links are checked only from 30 min
+      # before puck drop until 1 h after the end, and while someone has the channel tuned; otherwise
+      # nothing runs in Chromium and the schedule is scraped every 30 min instead of every 5.
+      HTV_TEAM: EDM
+      HTV_PRIORITY_LEAD_MIN: 30
       HTV_DEMAND_MIN: 20
-      HTV_IDLE_RECHECK_MIN: 180
-      HTV_IDLE_LINKS: 1       # non-Oilers channels: only their first mirror is ever checked until tuned (0 = all)
+      HTV_WARM_LINKS: 3       # mirrors per channel kept checked while warm (0 = all)
+      HTV_IDLE_REFRESH_MIN: 30
       # Playlist for IPTV apps (/api/m3u-edge): a client on this public name gets that MediaMTX URL.
       HTV_EDGE_PUBLIC: "htvsource.duckdns.org=https://htvhls.duckdns.org"
       HTV_CHROMIUM_NICE: 15   # link-check browser runs at low priority so it cannot starve the stream proxy (0 = off)

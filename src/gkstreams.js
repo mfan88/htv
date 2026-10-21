@@ -5,7 +5,7 @@
 // Records have the same shape as scraper.js's. A game onhockey also lists gets its links added to
 // each of onhockey's channels for that game, as extra mirrors; any other game gets its own channel.
 
-const { teamsIn } = require("./stats");
+const { teamsIn, TEAM } = require("./stats");
 
 const API = "https://streamed.pk/api";
 const SOURCE_UTC_OFFSET = 1; // keeps the "HH:MM" we write in the same offset as onhockey's
@@ -53,7 +53,7 @@ async function matchLinks(match) {
 // onhockey's records, merged with GKStreams mirrors. Returns just the new records.
 async function mirrors(onhockey, now = Date.now()) {
   const matches = (await getJSON("/matches/hockey")).filter(m =>
-    m.date && m.date > now - BEFORE_MS && m.date < now + AHEAD_MS && m.sources?.length && pairOf(m.title));
+    m.date && m.date > now - BEFORE_MS && m.date < now + AHEAD_MS && m.sources?.length && pairOf(m.title)?.includes(TEAM)); // other teams are skipped before their links are fetched
 
   const lists = [];
   for (let i = 0; i < matches.length; i += CONCURRENCY) {

@@ -5,6 +5,7 @@
 const fs = require("fs");
 const { Parser } = require("htmlparser2");
 const gkstreams = require("./gkstreams");
+const { isTeamGame } = require("./stats");
 
 const SCHEDULE_URL = "https://onhockey.tv/schedule_table.php";
 const FULL_PREFIX = "https://onhockey.tv/index.php?place=np_stream400&channel=//";
@@ -107,7 +108,7 @@ async function extraMirrors(streams) {
 }
 
 async function scrape(outputPath) {
-  const streams = parseSchedule(await fetchSchedule());
+  const streams = parseSchedule(await fetchSchedule()).filter(r => isTeamGame(r.game));
   const data = {
     updated: new Date().toISOString(),
     source_utc_offset: SOURCE_UTC_OFFSET,

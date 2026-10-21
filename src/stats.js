@@ -33,6 +33,11 @@ function teamsIn(gameName) {
   return found;
 }
 
+// The one team this server follows (NHL abbreviation). Every other game is dropped at the scrape,
+// so nothing else is ever checked, listed or proxied.
+const TEAM = (process.env.HTV_TEAM || "EDM").toUpperCase();
+const isTeamGame = gameName => teamsIn(gameName).includes(TEAM);
+
 let cache = { at: 0, data: null, pending: null };
 
 async function scoreboard() {
@@ -118,4 +123,4 @@ async function labels(gameNames) {
   return out;
 }
 
-module.exports = { forGame, labels, teamsIn, scoreboard };
+module.exports = { forGame, labels, teamsIn, scoreboard, TEAM, isTeamGame };

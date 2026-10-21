@@ -2,7 +2,7 @@
 // time, so the UI can hide dead links and start verified ones instantly.
 
 const RECHECK_MS = 10 * 60 * 1000; // links often come alive at puck drop
-const HOT_RECHECK_MS = 3 * 60 * 1000; // games on or about to start: keep captures warm
+const HOT_RECHECK_MS = 5 * 60 * 1000; // games on or about to start: keep captures warm
 const FRESH_CAPTURE_MS = 60 * 1000; // stream tokens expire; reuse captures only briefly
 const RECENT_CAPTURE_MS = 15 * 60 * 1000; // for callers that probe the capture before trusting it
 
