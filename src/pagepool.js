@@ -101,7 +101,8 @@ function create({ openPage, max = 3, idleMs = 60000, log = () => {} }) {
     makeRoom();
     e = { lastUsed: Date.now(), inflight: 0 };
     e.ready = openPage(origin).then(async page => {
-      await page.evaluate(PAGE_SIDE);
+      // The page is in no map yet, so a failure here must close it or it stays open for good.
+      try { await page.evaluate(PAGE_SIDE); } catch (err) { await page.close().catch(() => {}); throw err; }
       page.once("close", () => { if (entries.get(key) === e) { entries.delete(key); log(`page pool: page of ${key.slice(0, 8)} went away`); } });
       return page;
     });
