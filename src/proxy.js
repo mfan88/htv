@@ -60,12 +60,20 @@ async function upstream(fetcher, id, target, extra = {}, timeout = 15000, direct
   return browser.fetch(id, target, headers, timeout);
 }
 
+// Playwright keeps every APIResponse body in memory until the response is disposed (or the context closes),
+// so each playlist poll and segment would pile up for as long as the browser runs. Call this once the body
+// has been read; headers, status and url stay readable afterwards. Page-fetched responses have no dispose.
+const release = res => res.dispose?.().catch(() => {});
+
 // { ok, status } for the captured playlist (a request being made doesn't mean it works); status is 0 on a
 // network error.
 async function probeStatus(fetcher, id, url, { direct = false } = {}) {
   try {
     const res = await upstream(fetcher, id, url, {}, 15000, direct);
-    return { ok: res.ok() && (await res.text()).trimStart().startsWith("#EXTM3U"), status: res.status() };
+    const ok = res.ok() && (await res.text()).trimStart().startsWith("#EXTM3U");
+    const status = res.status();
+    await release(res);
+    return { ok, status };
   } catch {
     return { ok: false, status: 0 };
   }
@@ -105,6 +113,7 @@ async function respond(fetcher, id, target, range, wrap, timeout = 15000) {
 
   const contentType = res.headers()["content-type"] || "";
   const body = await res.body().catch(() => Buffer.alloc(0));
+  await release(res);
   if (res.ok() && isPlaylist(target, contentType)) {
     const text = body.toString("utf8");
     if (text.trimStart().startsWith("#EXTM3U")) {
