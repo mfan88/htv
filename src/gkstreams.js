@@ -53,7 +53,7 @@ async function matchLinks(match) {
 // onhockey's records, merged with GKStreams mirrors. Returns just the new records.
 async function mirrors(onhockey, now = Date.now()) {
   const matches = (await getJSON("/matches/hockey")).filter(m =>
-    m.date && m.date > now - BEFORE_MS && m.date < now + AHEAD_MS && m.sources?.length && pairOf(m.title)?.includes(TEAM)); // other teams are skipped before their links are fetched
+    m.date && m.date > now - BEFORE_MS && m.date < now + AHEAD_MS && m.sources?.length && (!TEAM || pairOf(m.title).includes(TEAM))); // with HTV_TEAM set, other teams are skipped before their links are fetched
 
   const lists = [];
   for (let i = 0; i < matches.length; i += CONCURRENCY) {

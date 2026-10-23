@@ -33,10 +33,10 @@ function teamsIn(gameName) {
   return found;
 }
 
-// The one team this server follows (NHL abbreviation). Every other game is dropped at the scrape,
-// so nothing else is ever checked, listed or proxied.
-const TEAM = (process.env.HTV_TEAM || "EDM").toUpperCase();
-const isTeamGame = gameName => teamsIn(gameName).includes(TEAM);
+// HTV_TEAM (an NHL abbreviation) narrows the server to one team: every other game is dropped at the scrape,
+// so nothing else is ever checked, listed or proxied. Unset (the default) serves every NHL game.
+const TEAM = (process.env.HTV_TEAM || "").toUpperCase();
+const isTeamGame = gameName => !TEAM || teamsIn(gameName).includes(TEAM);
 
 let cache = { at: 0, data: null, pending: null };
 

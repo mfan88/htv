@@ -10,7 +10,7 @@
 //   HTV_TOKEN        if set, requests need "Authorization: Bearer <token>" or ?token=<token>
 //   HTV_DATA         data directory for caches (default ./htv-data)
 //   HTV_CONCURRENCY  links checked at once (default 2)
-//   HTV_TEAM         the one team to serve, NHL abbreviation (default EDM)
+//   HTV_TEAM         serve just one team, NHL abbreviation such as EDM (default: every NHL game)
 //   HTV_REFRESH_MIN  minutes between schedule scrapes near a game (default 5)
 //   HTV_IDLE_REFRESH_MIN  minutes between scrapes when no game is within 3 h (default 30)
 //   HTV_LEAD_MIN     minutes before a game starts that its links are warmed (default 30; old name HTV_PRIORITY_LEAD_MIN)
@@ -64,7 +64,7 @@ const DATA = path.resolve(process.env.HTV_DATA || "htv-data");
 fs.mkdirSync(DATA, { recursive: true });
 // Settings that were renamed or dropped: say so instead of ignoring them.
 if (process.env.HTV_PRIORITY_LEAD_MIN && !process.env.HTV_LEAD_MIN) console.log("HTV_PRIORITY_LEAD_MIN is deprecated, use HTV_LEAD_MIN");
-for (const [old, use] of [["HTV_PRIORITY_TEAMS", "HTV_TEAM (an NHL abbreviation, e.g. EDM)"], ["HTV_IDLE_RECHECK_MIN", "HTV_IDLE_REFRESH_MIN (and nothing is rechecked when idle)"], ["HTV_IDLE_LINKS", "HTV_WARM_LINKS"]]) {
+for (const [old, use] of [["HTV_PRIORITY_TEAMS", "HTV_TEAM (blank serves every team)"], ["HTV_IDLE_RECHECK_MIN", "HTV_IDLE_REFRESH_MIN (and nothing is rechecked when idle)"], ["HTV_IDLE_LINKS", "HTV_WARM_LINKS"]]) {
   if (process.env[old]) console.log(`${old} is ignored, use ${use}`);
 }
 // A stray rejection from a page or socket must not take the server down.

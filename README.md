@@ -37,7 +37,7 @@ services:
       HTV_DATA: /data
       HTV_CONCURRENCY: 2                   # link checks at once
       HTV_REFRESH_MIN: 5                   # minutes between schedule scrapes
-      HTV_TEAM: EDM                        # the only team scraped and served (NHL abbreviation)
+      # HTV_TEAM: EDM                     # optional: serve just this team (NHL abbreviation); default is every NHL game
       HTV_LEAD_MIN: 30                     # warm window opens this long before puck drop
       HTV_POST_GAME_MIN: 30                # stays warm and listed this long after the game ends
       HTV_GAME_MIN: 210                    # assumed game length (the NHL scoreboard's "final" ends it earlier)
