@@ -22,6 +22,11 @@ services:
       HTV_DEMAND_MIN: 20
       HTV_WARM_LINKS: 3       # mirrors per channel kept checked while warm (0 = all)
       HTV_IDLE_REFRESH_MIN: 30
+      # Extra mirrors from SportSurge, fetched through a Byparr instance (its Cloudflare challenge) only from
+      # 60 min before a game. Put HTV_BYPARR_URL and HTV_BYPARR_TOKEN in .env; without a URL SportSurge is skipped.
+      HTV_BYPARR_URL: ${HTV_BYPARR_URL:-}
+      HTV_BYPARR_TOKEN: ${HTV_BYPARR_TOKEN:-}
+      HTV_SPORTSURGE_LEAD_MIN: 60
       # Playlist for IPTV apps (/api/m3u-edge): a client on this public name gets that MediaMTX URL.
       HTV_EDGE_PUBLIC: "htvsource.duckdns.org=https://htvhls.duckdns.org"
       HTV_CHROMIUM_NICE: 15   # link-check browser runs at low priority so it cannot starve the stream proxy (0 = off)

@@ -19,8 +19,12 @@ const ONHOCKEY = "https://onhockey.tv/";
 const BLOCK_HEAVY = process.env.HTV_BLOCK_HEAVY === "1";
 const HEAVY_TYPES = new Set(["image", "font", "media"]);
 
+// Links have no scheme (https is assumed); an http-only site keeps its "http://".
+const schemeOf = link => (link.startsWith("http://") ? "http://" : "https://");
+const bare = link => link.replace(/^https?:\/\//, "");
+
 function wrapperUrl(link) {
-  return ONHOCKEY + "np_stream400.php?channel=//" + link;
+  return ONHOCKEY + "np_stream400.php?channel=//" + bare(link);
 }
 
 // Every page opened here, with its open time. A page whose job finished while newPage() was still
@@ -39,7 +43,7 @@ setInterval(() => {
 const WIN_MIN = 4;
 const RELEARN_EVERY = 8;
 const wins = new Map(); // host -> { wrapper, bare, n }
-const hostOf = link => link.split("/")[0];
+const hostOf = link => bare(link).split("/")[0];
 
 function loadsFor(link) {
   const w = wins.get(hostOf(link));
@@ -195,7 +199,7 @@ function extract(context, blocker, link, { signal } = {}) {
     if (signal?.aborted) return job.finish(null);
     signal?.addEventListener("abort", () => job.finish(null), { once: true });
     job.timers.push(setTimeout(() => job.finish(null), TIMEOUT_MS));
-    const urls = { wrapper: wrapperUrl(link), bare: "https://" + link };
+    const urls = { wrapper: wrapperUrl(link), bare: schemeOf(link) + bare(link) };
     for (const via of loadsFor(link)) {
       openHidden(context, blocker, urls[via], job, via).catch(() => job.finish(null));
     }

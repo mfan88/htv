@@ -17,6 +17,10 @@
 //   HTV_POST_GAME_MIN minutes after a game ends that it stays warm and listed (default 30)
 //   HTV_GAME_MIN     assumed game length when the NHL scoreboard doesn't say it's over (default 210)
 //   HTV_DEMAND_MIN   a game someone tuned stays warm and listed this long after the last poll (default 20)
+//   HTV_BYPARR_URL   Byparr address (e.g. https://byparr.example.com); enables the SportSurge extra mirrors
+//   HTV_BYPARR_TOKEN sent as X-Byparr-Token when set
+//   HTV_SPORTSURGE_LEAD_MIN  fetch SportSurge pages from this long before a game (default 60)
+//   HTV_SPORTSURGE_REFRESH_MIN  refetch a cached page after this long (default 15)
 //   HTV_WARM_LINKS   mirrors per channel kept checked while a game is near (default 3, 0 = all)
 //   HTV_FAIL_BACKOFF_AFTER    consecutive failures before a link is backed off (default 3)
 //   HTV_FAIL_BACKOFF_MAX_MIN  longest backoff in minutes; the delays grow 10, 30, 60 (default 60)
