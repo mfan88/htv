@@ -58,6 +58,7 @@ const demandKey = g => (DEMAND_BY_GAME ? g.gameId : g.id);
 const demand = new Map(); // channel id (or game id) -> last tune time
 const isDemanded = (g, now = Date.now()) => now - (demand.get(demandKey(g)) || 0) < DEMAND_MS;
 const ended = new Map(); // game id -> when the NHL scoreboard was first seen saying it is over
+let lastLabels = {}; // the scoreboard labels of the last schedule() run, for callers that must not wait on the NHL API
 const winOpts = () => ({ cfg, ended, demanded: g => isDemanded(g) });
 
 const DATA = path.resolve(process.env.HTV_DATA || "htv-data");
@@ -90,16 +91,16 @@ async function refresh() {
     }
     log("scrape failed:", state.error);
   }
-  schedule();
+  await schedule().catch(err => log("schedule failed:", err.message || err));
   log(`schedule: ${state.data?.streams?.length ?? 0} links, ${engine.nhlLinks(state.data).length} NHL`);
-  const near = livetv.hotLinks(state.data, { cfg: { ...cfg, leadMs: 3 * 60 * 60 * 1000 }, labels: await nhlLabels(), ended, demanded: g => isDemanded(g) }).size > 0;
+  const near = livetv.hotLinks(state.data, { cfg: { ...cfg, leadMs: 3 * 60 * 60 * 1000 }, labels: lastLabels, ended, demanded: g => isDemanded(g) }).size > 0;
   setTimeout(refresh, state.error || near ? REFRESH_MS : IDLE_REFRESH_MS).unref?.();
 }
 
 let lastHot = -1;
 async function schedule() {
   const now = Date.now();
-  const labels = await nhlLabels();
+  const labels = lastLabels = await nhlLabels();
   const games = livetv.games(state.data, checker.statuses());
   for (const g of games) if (livetv.isFinal(labels[g.name]) && !ended.has(g.gameId)) ended.set(g.gameId, now);
   for (const id of [...ended.keys()]) if (!games.some(g => g.gameId === id)) ended.delete(id);
@@ -126,6 +127,7 @@ function dropFinished(games, labels, now) {
     if (entry) { engine.pool.release(entry.capture.id); current.delete(id); log(`closed ${id}: game is over`); }
     liveShared.delete(id);
   }
+  for (const id of liveShared.keys()) if (!games.some(g => g.id === id)) liveShared.delete(id);
   for (const [key] of demand) if (!games.some(g => demandKey(g) === key)) demand.delete(key);
 }
 
@@ -413,12 +415,11 @@ async function live(req, res, url) {
   const game = livetv.games(state.data, statuses).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
   // A finished game has left the playlists; a viewer who is still polling it keeps it alive through `demand`.
-  const labels = await nhlLabels();
-  if (livetv.phase(game, labels[game.name], state.data, { cfg, ended, demanded: isDemanded(game) }) === "over") return sendJson(res, 404, { error: "unknown channel" });
+  if (livetv.phase(game, lastLabels[game.name], state.data, { cfg, ended, demanded: isDemanded(game) }) === "over") return sendJson(res, 404, { error: "unknown channel" });
   // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
   const fresh = !isDemanded(game);
   demand.set(demandKey(game), Date.now());
-  if (fresh) schedule();
+  if (fresh) schedule().catch(() => {});
 
   // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.
   let shared = liveShared.get(id);
@@ -533,5 +534,5 @@ function startHttp() {
   await engine.start(DATA);
   startHttp();
   await refresh();
-  setInterval(schedule, 60 * 1000); // hot links are due every 5 min; the scrape runs on its own timer
+  setInterval(() => schedule().catch(err => log("schedule failed:", err.message || err)), 60 * 1000); // hot links are due every 5 min; the scrape runs on its own timer
 })();
