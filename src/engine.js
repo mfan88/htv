@@ -27,7 +27,9 @@ function lowPriorityChromium() {
     // The image installs only the headless shell, so chromium.executablePath() (full Chromium) is not it.
     const root = process.env.PLAYWRIGHT_BROWSERS_PATH || "/ms-playwright";
     const dir = fs.readdirSync(root).find(d => d.startsWith("chromium_headless_shell-"));
-    const real = dir && path.join(root, dir, "chrome-headless-shell-linux64", "chrome-headless-shell");
+    // The folder is named per architecture (chrome-headless-shell-linux64 on x64, -linux-arm64 on arm64).
+    const sub = dir && fs.readdirSync(path.join(root, dir)).find(d => d.startsWith("chrome-headless-shell-linux"));
+    const real = sub && path.join(root, dir, sub, "chrome-headless-shell");
     if (!real || !fs.existsSync(real)) throw new Error("headless shell not found under " + root);
     const wrapper = path.join(require("os").tmpdir(), "htv-chromium.sh");
     fs.writeFileSync(wrapper, `#!/bin/sh\nexec nice -n ${n} "${real}" "$@"\n`, { mode: 0o755 });
