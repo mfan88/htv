@@ -5,8 +5,23 @@
 const crypto = require("crypto");
 const { NHL_LEAGUES } = require("./engine");
 
-const GAME_MS = 3.5 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
+const MIN = 60 * 1000;
+
+// Window settings in ms: how long a game is assumed to last, how long before the start its links are
+// warmed, and how long after the end it stays warm and listed. HTV_PRIORITY_LEAD_MIN is the old name of
+// HTV_LEAD_MIN.
+function settings(env = process.env) {
+  const min = (def, ...names) => {
+    const v = names.map(n => env[n]).find(x => x !== undefined && x !== "" && +x >= 0);
+    return (v === undefined ? def : +v) * MIN;
+  };
+  return {
+    gameMs: min(210, "HTV_GAME_MIN"),
+    leadMs: min(30, "HTV_LEAD_MIN", "HTV_PRIORITY_LEAD_MIN"),
+    postMs: min(30, "HTV_POST_GAME_MIN"),
+  };
+}
 
 // One channel per game and feed/channel pair ("SN West", "NHL Network"), in schedule
 // order: { id, gameId, league, time, name, feed, channel, start?, links }. links are that
@@ -34,20 +49,6 @@ function games(data, statuses = {}) {
 const channelSuffix = g => (g.channel ? ` · ${g.channel}${/^home/i.test(g.feed || "") ? "" : ` (${g.feed})`}` : "");
 const channelName = (g, label) => (label ? `${label.away} @ ${label.home}` : g.name) + channelSuffix(g);
 
-// Games on or near the air: the links worth keeping captured. With `teams` (lowercase
-// substrings of the game name, e.g. "oilers") only those teams' games count, and the window
-// opens `leadMs` before the start; without it every game counts, 3 hours ahead.
-function hotLinks(data, { teams = [], leadMs = 3 * HOUR, now = Date.now() } = {}) {
-  const hot = new Set();
-  for (const g of games(data)) {
-    if (teams.length && !teams.some(t => g.name.toLowerCase().includes(t))) continue;
-    const start = startTime(g, null, data);
-    if (start == null || now < start - leadMs || now > start + GAME_MS + HOUR) continue;
-    g.links.forEach(l => hot.add(l));
-  }
-  return hot;
-}
-
 // When a game starts (ms): the NHL API's time, else onhockey's "HH:MM" (in its own
 // UTC offset, on the day of the scrape; a time long past means tomorrow).
 function startTime(g, label, data) {
@@ -63,23 +64,60 @@ function startTime(g, label, data) {
   return t;
 }
 
+// When a game ends (ms), or null without a start time. The NHL scoreboard has no end time, only a state:
+// once it says OFF/FINAL, `ended` (game id -> when the server first saw that) ends the game early.
+const isFinal = label => ["OFF", "FINAL"].includes(label?.state);
+function endTime(g, label, data, { cfg = settings(), ended = new Map() } = {}) {
+  const start = startTime(g, label, data);
+  if (start == null) return null;
+  const nominal = start + cfg.gameMs;
+  return isFinal(label) && ended.has(g.gameId) ? Math.min(nominal, ended.get(g.gameId)) : nominal;
+}
+
+// Where `now` is in a game's life: "pre" (before the warm-up), "warm" (from `leadMs` before the start until
+// `postMs` after the end), "over" (finished and past that), or "unknown" (no start time). A game someone is
+// watching (`demanded`) is "warm" whatever the clock says, so overtime or a late tune isn't cut off.
+// Warming (hotLinks), the playlist and the guide all go by this, so they never disagree.
+function phase(g, label, data, { now = Date.now(), cfg = settings(), ended, demanded = false } = {}) {
+  if (demanded) return "warm";
+  const start = startTime(g, label, data);
+  if (start == null) return "unknown";
+  if (now < start - cfg.leadMs) return "pre";
+  return now <= endTime(g, label, data, { cfg, ended }) + cfg.postMs ? "warm" : "over";
+}
+
+// Games still worth listing: everything except those that are "over".
+const listed = (list, labels, data, win = {}) =>
+  list.filter(g => phase(g, labels[g.name], data, { ...win, demanded: win.demanded?.(g) }) !== "over");
+
+// Links of games in their warm window, or watched (`demanded(g)`): the links worth keeping captured.
+function hotLinks(data, { labels = {}, cfg = settings(), now = Date.now(), ended, demanded = () => false } = {}) {
+  const hot = new Set();
+  for (const g of games(data)) {
+    if (phase(g, labels[g.name], data, { now, cfg, ended, demanded: demanded(g) }) === "warm") g.links.forEach(l => hot.add(l));
+  }
+  return hot;
+}
+
 // Channel group: IPTV apps (TiviMate) list channels by group, so split the games by state.
-function groupOf(g, label, data, now) {
+function groupOf(g, label, data, now, win) {
   const start = startTime(g, label, data);
   if (start == null) return "NHL";
-  if (now >= start - 15 * 60 * 1000 && now <= start + GAME_MS) return "Live now";
+  if (now >= start - 15 * MIN && now <= endTime(g, label, data, win)) return "Live now";
   return now < start ? "Upcoming" : "Finished";
 }
 
 // `logo(label)` is the thumbnail URL for a game's NHL label, or null. With `edge` (the MediaMTX
 // base URL) channels point at MediaMTX, which pulls /live/<id>.m3u8 itself and shares one pull.
-function m3u(list, labels, base, token, logo = () => null, data = {}, now = Date.now(), edge = null) {
+// `win` ({ cfg, ended, demanded(g) }) drops games that are over; without it every game is listed.
+function m3u(list, labels, base, token, logo = () => null, data = {}, now = Date.now(), edge = null, win = null) {
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   const lines = ["#EXTM3U"];
+  if (win) list = listed(list, labels, data, { ...win, now });
   list.forEach((g, i) => {
     const name = channelName(g, labels[g.name]).replace(/[",]/g, " ");
     const icon = logo(labels[g.name]);
-    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}"${icon ? ` tvg-logo="${icon}"` : ""} group-title="${groupOf(g, labels[g.name], data, now)}",${name}`);
+    lines.push(`#EXTINF:-1 tvg-id="htv-${g.id}" tvg-chno="${i + 1}" tvg-name="${name}"${icon ? ` tvg-logo="${icon}"` : ""} group-title="${groupOf(g, labels[g.name], data, now, win || {})}",${name}`);
     lines.push(edge ? `${edge}/ch_${g.id}/index.m3u8` : `${base}/live/${g.id}.m3u8${q}`);
   });
   return lines.join("\n") + "\n";
@@ -90,7 +128,8 @@ const xmltvTime = ms => new Date(ms).toISOString().replace(/[-:T]/g, "").slice(0
 
 // Each channel gets the game itself plus a "starting soon" block before it, so the
 // guide isn't empty while waiting for puck drop.
-function xmltv(list, labels, data, logo = () => null) {
+function xmltv(list, labels, data, logo = () => null, now = Date.now(), win = null) {
+  if (win) list = listed(list, labels, data, { ...win, now });
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="htv">'];
   for (const g of list) {
     const icon = logo(labels[g.name]);
@@ -105,7 +144,7 @@ function xmltv(list, labels, data, logo = () => null) {
     const icon = logo(label) ? `<icon src="${xml(logo(label))}"/>` : "";
     out.push(`  <programme start="${xmltvTime(start - 12 * HOUR)}" stop="${xmltvTime(start)}" ${ch}>` +
       `<title>${xml(title)} (starting soon)</title><category>Sports</category>${icon}</programme>`);
-    out.push(`  <programme start="${xmltvTime(start)}" stop="${xmltvTime(start + GAME_MS)}" ${ch}>` +
+    out.push(`  <programme start="${xmltvTime(start)}" stop="${xmltvTime(endTime(g, label, data, win || {}))}" ${ch}>` +
       `<title>${xml(title)}</title><desc>${xml(`${g.league}: ${g.name}`)}</desc>` +
       `<category>Sports</category><category>Sports event</category>${icon}</programme>`);
   }
@@ -126,4 +165,4 @@ function stalled(entry, text, now = Date.now(), minMs = 12000) {
   return now - entry.advancedAt > Math.max(minMs, 2.5 * target * 1000);
 }
 
-module.exports = { games, m3u, xmltv, hotLinks, stalled };
+module.exports = { games, m3u, xmltv, hotLinks, stalled, settings, endTime, phase, listed, isFinal };

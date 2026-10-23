@@ -26,7 +26,7 @@ It used to be an Electron desktop app plus an Android TV app. Both were deleted 
 
 - CommonJS, no build step. Match the existing style: short comments that explain *why*.
 - Only NHL and NHL Preseason links are used (`engine.NHL_LEAGUES`), and only the one team `HTV_TEAM` (default EDM, `stats.isTeamGame`): the scraper and gkstreams drop every other game, so nothing else is checked or served.
-- CPU: nothing is checked outside the warm window (1 h before a game to 1 h after, or a tuned channel); the scrape slows to `HTV_IDLE_REFRESH_MIN` when no game is within 3 h; warm channels check only their best `HTV_WARM_LINKS` mirrors.
+- CPU: nothing is checked outside the warm window (`HTV_LEAD_MIN` before a game to `HTV_POST_GAME_MIN` after its end, or a tuned channel; `livetv.phase()` decides, and the playlist and guide drop games past it); the scrape slows to `HTV_IDLE_REFRESH_MIN` when no game is within 3 h; warm channels check only their best `HTV_WARM_LINKS` mirrors.
 - Commit messages end with a `Co-Authored-By:` line.
 
 ## Running and testing

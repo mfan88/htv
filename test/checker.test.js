@@ -88,7 +88,7 @@ test("a watched link is still tried while backed off, at most once per interval"
   const demand = new Set([LINK]);
   await round({ demand, hot: demand });
   assert.equal(calls.length, n, "just tried: too soon");
-  tick(3 * MIN + 1); // hot links go stale after 3 min; the demand interval is 2 min
+  tick(5 * MIN + 1); // hot links go stale after 5 min; the demand interval is 2 min
   await round({ demand, hot: demand });
   assert.equal(calls.length, n + 1);
   await round({ demand, hot: demand });
