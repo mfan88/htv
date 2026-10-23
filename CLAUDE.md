@@ -14,7 +14,7 @@ It used to be an Electron desktop app plus an Android TV app. Both were deleted 
 | `src/proxy.js` | Fetches upstream through the context's request API (shared cookies, captured headers replayed), rewrites playlists, unwraps segments disguised as images (fake WebP/PNG header before the TS packets; ffmpeg can't read those), `probe()` |
 | `src/checker.js` | Queue of link checks (`setConcurrency`); hot links (games on/near the air) are rechecked sooner and queued first |
 | `src/livetv.js` | M3U and XMLTV: one channel per game + feed/channel pair (id = hash of league/time/game/feed/channel); `hotLinks()` |
-| `src/sportsurge.js` | Extra mirrors from v2.sportsurge.net through Byparr (`HTV_BYPARR_URL`, Cloudflare challenge). Fetches the hockey page and a game's page only within `HTV_SPORTSURGE_LEAD_MIN` of its start, caches them, and never blocks the scrape (returns the cache, refreshes in the background). Replaced GKStreams |
+| `src/sportsurge.js` | Extra mirrors from v2.sportsurge.net through Byparr (`HTV_BYPARR_URL`/`HTV_BYPARR_TOKEN`, or `<data>/byparr.json`; Cloudflare challenge). Fetches the hockey page and a game's page only within `HTV_SPORTSURGE_LEAD_MIN` of its start, caches them, and never blocks the scrape (returns the cache, refreshes in the background). Replaced GKStreams |
 | `src/scraper.js` | Fetches `https://onhockey.tv/schedule_table.php` (cp1251), parses with htmlparser2. Records `{league, game, time, feed, name, channel, link}` |
 | `src/stats.js` | NHL API (`api-web.nhle.com/v1/score/now`): `CGY @ EDM` labels and start times. onhockey lists games "away - home" |
 | `Dockerfile`, `docker-compose.yml` | Node + Chromium headless shell under `tini`; data in `/data`, thumbnails mounted at `/logos` (`HTV_LOGOS` in `.env`) |

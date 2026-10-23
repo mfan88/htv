@@ -8,6 +8,8 @@
 // mirrors() never waits for Byparr: it returns what earlier refreshes cached and starts a refresh in the
 // background, so a slow solve can't hold up the schedule scrape.
 
+const fs = require("fs");
+const path = require("path");
 const { Parser } = require("htmlparser2");
 const { teamsIn, isTeamGame } = require("./stats");
 
@@ -20,11 +22,18 @@ const SOLVE_TIMEOUT_MS = 90 * 1000;
 
 const cache = { list: null, games: new Map(), running: null }; // list: { at, rows }; games: page url -> { at, links }
 
+// Byparr's address and token: the environment, else <HTV_DATA>/byparr.json ({ "url": "...", "token": "..." }).
+// The file lives on the data volume, so a deployment needs no compose change and the token stays out of the image.
+function config() {
+  let file = {};
+  try { file = JSON.parse(fs.readFileSync(path.join(process.env.HTV_DATA || "htv-data", "byparr.json"), "utf8")); } catch {}
+  return { url: process.env.HTV_BYPARR_URL || file.url || "", token: process.env.HTV_BYPARR_TOKEN || file.token || "" };
+}
+
 // One Byparr request: the page's HTML once the challenge is solved.
 async function byparr(url) {
-  const api = process.env.HTV_BYPARR_URL;
-  if (!api) throw new Error("HTV_BYPARR_URL is not set");
-  const token = process.env.HTV_BYPARR_TOKEN;
+  const { url: api, token } = config();
+  if (!api) throw new Error("no Byparr address (HTV_BYPARR_URL or byparr.json in the data folder)");
   const res = await fetch(/\/v1\/?$/.test(api) ? api : api.replace(/\/$/, "") + "/v1", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(token ? { "X-Byparr-Token": token } : {}) },
@@ -134,7 +143,7 @@ async function refresh(onhockey, now, solve) {
 
 // onhockey's records plus the cached SportSurge mirrors; returns just the new records. `solve(url)` -> HTML.
 async function mirrors(onhockey, now = Date.now(), solve = byparr) {
-  if (!process.env.HTV_BYPARR_URL && solve === byparr) return [];
+  if (!config().url && solve === byparr) return [];
   cache.running ||= refresh(onhockey, now, solve)
     .catch(err => console.error("sportsurge:", err.message || err))
     .finally(() => { cache.running = null; });
@@ -158,4 +167,4 @@ async function mirrors(onhockey, now = Date.now(), solve = byparr) {
   return out;
 }
 
-module.exports = { mirrors, parseList, parseGame, toLink, pairOf, idle: () => cache.running, reset() { cache.list = null; cache.games.clear(); } };
+module.exports = { config, mirrors, parseList, parseGame, toLink, pairOf, idle: () => cache.running, reset() { cache.list = null; cache.games.clear(); } };

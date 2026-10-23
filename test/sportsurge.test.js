@@ -83,7 +83,27 @@ test("a Byparr failure leaves the schedule alone", async () => {
   await sportsurge.idle();
 });
 
-test("without HTV_BYPARR_URL nothing is fetched", async () => {
+test("config: the environment wins, else byparr.json in the data folder", () => {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "htv-byparr-"));
+  fs.writeFileSync(path.join(dir, "byparr.json"), JSON.stringify({ url: "http://file.test", token: "from-file" }));
+  const saved = { ...process.env };
+  try {
+    process.env.HTV_DATA = dir;
+    delete process.env.HTV_BYPARR_URL; delete process.env.HTV_BYPARR_TOKEN;
+    assert.deepEqual(sportsurge.config(), { url: "http://file.test", token: "from-file" });
+    process.env.HTV_BYPARR_URL = "http://env.test";
+    assert.deepEqual(sportsurge.config(), { url: "http://env.test", token: "from-file" });
+    process.env.HTV_DATA = path.join(dir, "missing");
+    delete process.env.HTV_BYPARR_URL;
+    assert.deepEqual(sportsurge.config(), { url: "", token: "" });
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("without a Byparr address nothing is fetched", async () => {
   const saved = process.env.HTV_BYPARR_URL;
   delete process.env.HTV_BYPARR_URL;
   sportsurge.reset();
