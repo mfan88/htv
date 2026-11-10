@@ -22,7 +22,8 @@ let concurrency = 2;
 let onStatus = () => {};
 let extractFn = null; // (link) => Promise<capture | null>, set by init()
 let onBackoff = () => {};
-const health = new Map(); // link -> { fails (in a row), until (no checks before), lastTry }
+const health = new Map(); // link -> { fails (in a row), until (no checks before), lastTry, ema (0..1 success rate, recent checks weigh most), n (checks seen) }
+const EMA_ALPHA = 0.3;
 
 function backoffDelay(fails) {
   const i = fails - FAIL_BACKOFF_AFTER;
@@ -34,6 +35,8 @@ function noteResult(link, ok) {
   const h = health.get(link) || { fails: 0, until: 0, lastTry: 0 };
   health.set(link, h);
   h.lastTry = Date.now();
+  h.ema = h.ema == null ? (ok ? 1 : 0) : h.ema * (1 - EMA_ALPHA) + (ok ? EMA_ALPHA : 0);
+  h.n = Math.min((h.n || 0) + 1, 50);
   if (ok) {
     if (h.until) onBackoff(link, 0, 0);
     h.fails = 0;
@@ -121,6 +124,19 @@ function recentCapture(link) {
   return r?.status === "ok" && r.capture && Date.now() - r.at < RECENT_CAPTURE_MS ? r.capture : null;
 }
 
+// How stable a link has been, 0..1: its recent success rate (pulled toward 0.5 while there is little
+// history), moved by what the last check said. Failures include mid-stream "down"/"stall" reports.
+function score(link) {
+  const h = health.get(link);
+  const n = h?.n || 0;
+  let s = ((h?.ema ?? 0.5) * n + 0.5 * 2) / (n + 2);
+  const status = results.get(link)?.status;
+  if (status === "ok") s += 0.15;
+  else if (status === "fail") s -= 0.25;
+  if (h?.until && Date.now() < h.until) s -= 0.2; // backed off
+  return Math.min(1, Math.max(0, s));
+}
+
 function statuses() {
   return Object.fromEntries([...results].map(([l, r]) => [l, r.status]));
 }
@@ -129,7 +145,11 @@ function statuses() {
 // on-disk cache and the server API.
 function snapshot() {
   const out = {};
-  for (const [link, r] of results) if (r.status !== "checking") out[link] = { status: r.status, at: r.at };
+  for (const [link, r] of results) {
+    if (r.status === "checking") continue;
+    const h = health.get(link);
+    out[link] = { status: r.status, at: r.at, ...(h?.n ? { ema: h.ema, n: h.n } : {}) };
+  }
   return out;
 }
 
@@ -141,6 +161,10 @@ function seed(checks) {
     const r = results.get(link);
     if (r?.status === "checking" || (r && r.at >= c.at)) continue;
     setStatus(link, c.status, null, c.at);
+    if (typeof c.ema === "number" && c.n > 0 && !health.get(link)?.n) {
+      const h = health.get(link) || { fails: 0, until: 0, lastTry: 0 };
+      health.set(link, Object.assign(h, { ema: c.ema, n: c.n }));
+    }
   }
 }
 
@@ -151,6 +175,7 @@ module.exports = {
   freshCapture,
   recentCapture,
   statuses,
+  score,
   snapshot,
   seed,
   record,

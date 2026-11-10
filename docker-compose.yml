@@ -7,9 +7,16 @@ services:
     restart: unless-stopped
     ports:
       - "8787:8787"
+    depends_on:
+      - byparr
     environment:
       # Put HTV_TOKEN=<random string> in .env next to this file (git-ignored).
       HTV_TOKEN: ${HTV_TOKEN:?set HTV_TOKEN in .env}
+      # Captcha/Cloudflare solver: schedule, GKStreams and NHL API fetches and link extractions that fail or
+      # hit a challenge are retried through it (unset = plain only). Slow and heavy, so keep it a fallback.
+      HTV_BYPARR_URL: http://byparr:8191
+      HTV_BYPARR_CONCURRENCY: 2
+      HTV_BYPARR_COOLDOWN_MIN: 30   # a link Byparr already tried is left alone this long
       HTV_CONCURRENCY: 3      # links checked at once
       HTV_REFRESH_MIN: 5      # minutes between schedule scrapes
       HTV_LOGOS: /logos       # thumbnails folder (the mount below)
@@ -31,6 +38,20 @@ services:
       - ./htv-data:/data      # caches (schedule, ad-block filters)
     cpu_shares: 256           # yield to Jellyfin and the rest of the stack when the CPU is contended
     shm_size: 512m            # Chromium needs more shared memory than Docker's 64 MB default
+
+  # Solves captcha / Cloudflare challenges for pages htv scrapes (FlareSolverr-compatible API on :8191).
+  # Only reachable from other containers in this project; no port is published.
+  # Pinned Byparr release; CI publishes it as ghcr.io/mfan88/htv-byparr, and `docker compose up --build`
+  # builds the same release from upstream's Dockerfile (keep the tag in step with .github/workflows/docker.yml).
+  byparr:
+    image: ghcr.io/mfan88/htv-byparr:v3.1.1
+    build:
+      context: https://github.com/ThePhaseless/Byparr.git#v3.1.1
+      args:
+        VERSION: v3.1.1
+    container_name: htv-byparr
+    restart: unless-stopped
+    shm_size: 512m            # headless browser inside
 
   mediamtx:
     image: bluenviron/mediamtx:1.15.0   # pinned: newer releases require a session cookie that IPTVnator/TV apps may not send

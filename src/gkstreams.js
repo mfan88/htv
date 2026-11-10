@@ -6,6 +6,7 @@
 // each of onhockey's channels for that game, as extra mirrors; any other game gets its own channel.
 
 const { teamsIn } = require("./stats");
+const byparr = require("./byparr");
 
 const API = "https://streamed.pk/api";
 const SOURCE_UTC_OFFSET = 1; // keeps the "HH:MM" we write in the same offset as onhockey's
@@ -13,14 +14,10 @@ const BEFORE_MS = 5 * 60 * 60 * 1000; // a game this long past its start is over
 const AHEAD_MS = 36 * 60 * 60 * 1000; // streams for games further out don't exist yet
 const CONCURRENCY = 4;
 
-async function getJSON(path) {
-  const res = await fetch(API + path, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", Referer: "https://gkstreams.click/" },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`streamed.pk ${path} returned HTTP ${res.status}`);
-  return res.json();
-}
+const getJSON = path => byparr.fetchPage(API + path, {
+  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", Referer: "https://gkstreams.click/" },
+  signal: AbortSignal.timeout(15000),
+}, { json: true });
 
 const hhmm = ms => {
   const d = new Date(ms + SOURCE_UTC_OFFSET * 3600 * 1000);

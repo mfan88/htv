@@ -90,7 +90,8 @@ function schedule() {
   let links = engine.nhlLinks(state.data);
   if (PRIORITY.length && IDLE_LINKS > 0) {
     const keep = new Set(hot);
-    for (const g of livetv.games(state.data)) g.links.slice(0, IDLE_LINKS).forEach(l => keep.add(l));
+    // The best mirrors of the channels people see; broadcasters the condensed list hides stay unchecked until tuned.
+    for (const g of channelList(checker.statuses())) g.links.slice(0, IDLE_LINKS).forEach(l => keep.add(l));
     links = links.filter(l => keep.has(l));
   }
   if (hot.size !== lastHot) log(`mode: ${hot.size ? `warm, keeping ${hot.size} links hot` : "idle"}`);
@@ -237,9 +238,15 @@ const edgeUrl = req => {
   return EDGE_PUBLIC[host] || `${req.headers["x-forwarded-proto"] || "http"}://${host}:${EDGE_PORT}`;
 };
 
+// Channels as listed: condensed to home/away/French per game unless HTV_CONDENSE=0 or ?all=1.
+const CONDENSE = process.env.HTV_CONDENSE !== "0";
+const channelList = (statuses, all = false) =>
+  CONDENSE && !all ? livetv.condense(state.data, statuses, checker.score) : livetv.games(state.data, statuses, checker.score);
+
 async function liveList(req, res, format, edge = false) {
   const statuses = checker.statuses();
-  let list = livetv.games(state.data, statuses);
+  const all = new URL(req.url, "http://x").searchParams.get("all") === "1";
+  let list = channelList(statuses, all);
   // The edge playlist hides channels whose mirrors all failed their check (unchecked ones stay),
   // so MediaMTX doesn't list or pull dead streams.
   if (edge) list = list.filter(g => !g.links.every(l => statuses[l] === "fail"));
@@ -382,11 +389,14 @@ async function refreshCapture(entry, res) {
 async function live(req, res, url) {
   const id = /^\/live\/([0-9a-f]+)\.m3u8$/.exec(url.pathname)?.[1];
   const statuses = checker.statuses();
-  const game = livetv.games(state.data, statuses).find(g => g.id === id);
+  // A condensed channel (merged broadcasters) or, for old playlists and ?all=1, a single broadcaster's.
+  const game = livetv.condense(state.data, statuses, checker.score).find(g => g.id === id)
+    || livetv.games(state.data, statuses, checker.score).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
   // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
-  const fresh = Date.now() - (demand.get(demandKey(game)) || 0) > DEMAND_MS;
-  demand.set(demandKey(game), Date.now());
+  const keys = (game.members || [game.id]).map(m => (DEMAND_BY_GAME ? game.gameId : m));
+  const fresh = Date.now() - (demand.get(keys[0]) || 0) > DEMAND_MS;
+  for (const k of keys) demand.set(k, Date.now());
   if (PRIORITY.length && fresh) schedule();
 
   // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.

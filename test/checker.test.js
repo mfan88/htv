@@ -106,3 +106,16 @@ test("tunes outside the queue count: record() and noteTry() limit demand retries
   checker.noteTry(LINK);
   assert.equal(checker.mayTry(LINK, true), false);
 });
+
+test("score rewards a steady link and punishes a flaky or failing one", async t => {
+  Object.assign(process.env, { HTV_FAIL_BACKOFF_AFTER: "3" });
+  delete require.cache[require.resolve("../src/checker")];
+  const c = require("../src/checker");
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  for (const [link, seq] of [["steady", [1, 1, 1, 1, 1]], ["flaky", [1, 0, 1, 0, 0]], ["dead", [0, 0, 0, 0, 0]]]) {
+    for (const ok of seq) c.record(link, ok ? "ok" : "fail", ok ? { id: "c" } : null);
+  }
+  assert.ok(c.score("steady") > c.score("flaky"));
+  assert.ok(c.score("flaky") > c.score("dead"));
+  assert.ok(c.score("unknown") > c.score("dead") && c.score("unknown") < c.score("steady"), "no history sits in the middle");
+});

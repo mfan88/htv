@@ -12,7 +12,7 @@ const HOUR = 60 * 60 * 1000;
 // order: { id, gameId, league, time, name, feed, channel, start?, links }. links are that
 // channel's mirrors, best first. Ids only depend on the game and channel, so a channel
 // keeps its id across scrapes.
-function games(data, statuses = {}) {
+function games(data, statuses = {}, score = null) {
   const map = new Map();
   for (const r of data?.streams || []) {
     if (!NHL_LEAGUES.includes(r.league.toLowerCase())) continue;
@@ -26,7 +26,75 @@ function games(data, statuses = {}) {
     if (!g.links.includes(r.link)) g.links.push(r.link);
   }
   const rank = l => ({ ok: 0, fail: 2 })[statuses[l]] ?? 1;
-  return [...map.values()].map(g => ({ ...g, links: [...g.links].sort((a, b) => rank(a) - rank(b)) }));
+  const order = score ? (a, b) => score(b) - score(a) : (a, b) => rank(a) - rank(b);
+  return [...map.values()].map(g => ({ ...g, links: [...g.links].sort(order) }));
+}
+
+// ---- Condensed list: one channel per game and role instead of one per broadcaster ----
+//
+// onhockey lists a game under a dozen broadcasters in many languages. For the guide that is clutter,
+// so each game is cut down to: its home feed, its away feed and (if any) a French one, English first.
+// A role's channel merges the mirrors of every broadcaster in it, best first, so it can fail over
+// across broadcasters; its id only depends on the game and role, so it stays put when the best
+// broadcaster changes. A game with no English home/away feed falls back to whatever language it has,
+// so both sides stay covered. National English feeds (TSN, NHL Network) are only kept when the game
+// has no home or no away feed at all.
+const FRENCH_FEED = /^fran[cç]ais$|^french$/i;
+const FRENCH_CHANNEL = /(^|[^a-z])(tva|rds2?|canal\+|rds info)(?![a-z])/i;
+// Home/away feeds are tagged by broadcaster, so English is recognised by name.
+const ENGLISH_CHANNEL = /(^|[^a-z0-9])(espn|abc|tnt|tbs|trutv|sn|sn1|sn360|sportsnet|tsn|cbc|msg|msgsn|nbcs?|bally|fanduel|nhl|nesn|masn|root|altitude|victory|spectrum|gotham|yes|kong|kcop|premier sports|sky sports|tnt sports|fox|cbs|peacock|prime video|amazon|apple)(?![a-z])/i;
+
+// Language words are written lowercase in the feed column ("czech"); national feeds are acronyms ("TSN").
+const isLanguageFeed = f => /^[a-z][a-z ]*$/.test(f || "") && !/^(home|away)\b/i.test(f) && !/^english$/i.test(f);
+
+// "home" | "away" | "french" | "national" (English-language national feeds) | "foreign"
+function roleOf(g) {
+  const feed = (g.feed || "").trim();
+  if (FRENCH_FEED.test(feed) || FRENCH_CHANNEL.test(g.channel || "")) return "french";
+  if (/^home\b/i.test(feed)) return "home";
+  if (/^away\b/i.test(feed)) return "away";
+  if (isLanguageFeed(feed)) return "foreign";
+  return "national";
+}
+const isEnglish = g => ["national"].includes(roleOf(g)) || ((roleOf(g) === "home" || roleOf(g) === "away") && ENGLISH_CHANNEL.test(g.channel || ""));
+
+// `score(link)` is a 0..1 stability estimate (checker.score). A channel is as good as its best mirror,
+// with a little credit for having spare ones.
+function condense(data, statuses = {}, score = () => 0.5) {
+  const raw = games(data, statuses, score);
+  const hash = k => crypto.createHash("sha1").update(k).digest("hex").slice(0, 10);
+  const chScore = c => Math.max(0, ...c.links.map(score)) + 0.04 * Math.min(4, c.links.length);
+  const byGame = new Map();
+  for (const c of raw) {
+    const k = `${c.league}|${c.time}|${c.name}`;
+    if (!byGame.has(k)) byGame.set(k, []);
+    byGame.get(k).push(c);
+  }
+
+  const out = [];
+  for (const [gameKey, chans] of byGame) {
+    const merged = (role, pool) => {
+      if (!pool.length) return null;
+      const sorted = [...pool].sort((a, b) => chScore(b) - chScore(a));
+      const links = [...new Set(sorted.flatMap(c => c.links))].sort((a, b) => score(b) - score(a));
+      const top = sorted[0];
+      return { ...top, id: hash(`${gameKey}|${role}`), links, members: pool.map(c => c.id), role };
+    };
+    const pick = role => {
+      const pool = chans.filter(c => roleOf(c) === role);
+      const english = pool.filter(isEnglish);
+      return merged(role, english.length ? english : pool);
+    };
+    const home = pick("home"), away = pick("away");
+    const picks = [home, away];
+    if (!home || !away) picks.push(merged("national", chans.filter(c => roleOf(c) === "national")));
+    picks.push(merged("french", chans.filter(c => roleOf(c) === "french")));
+    const chosen = picks.filter(Boolean);
+    // Only foreign-language feeds: keep the best one rather than dropping the game.
+    if (!chosen.length) chosen.push(merged("any", chans));
+    out.push(...chosen);
+  }
+  return out;
 }
 
 // "CGY @ EDM · SN West" from the NHL API, else onhockey's own name. A feed other than
@@ -126,4 +194,4 @@ function stalled(entry, text, now = Date.now(), minMs = 12000) {
   return now - entry.advancedAt > Math.max(minMs, 2.5 * target * 1000);
 }
 
-module.exports = { games, m3u, xmltv, hotLinks, stalled };
+module.exports = { games, condense, roleOf, isEnglish, m3u, xmltv, hotLinks, stalled };

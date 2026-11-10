@@ -5,6 +5,7 @@
 const fs = require("fs");
 const { Parser } = require("htmlparser2");
 const gkstreams = require("./gkstreams");
+const byparr = require("./byparr");
 
 const SCHEDULE_URL = "https://onhockey.tv/schedule_table.php";
 const FULL_PREFIX = "https://onhockey.tv/index.php?place=np_stream400&channel=//";
@@ -83,16 +84,16 @@ function parseSchedule(html) {
   return records;
 }
 
-async function fetchSchedule() {
-  const res = await fetch(SCHEDULE_URL, {
+// Plain request first; a failure or a captcha/Cloudflare page is retried through Byparr, which
+// returns already-decoded HTML.
+function fetchSchedule() {
+  return byparr.fetchPage(SCHEDULE_URL, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       Referer: "https://onhockey.tv/",
     },
     signal: AbortSignal.timeout(20000),
-  });
-  if (!res.ok) throw new Error(`onhockey.tv returned HTTP ${res.status}`);
-  return new TextDecoder("windows-1251").decode(await res.arrayBuffer());
+  }, { decode: async r => new TextDecoder("windows-1251").decode(await r.arrayBuffer()) });
 }
 
 // GKStreams links are extra mirrors; if that site is down the onhockey schedule still stands.

@@ -2,6 +2,8 @@
 // but unofficial). One scoreboard call covers every game of the day, including each
 // goal's scorer and assists.
 
+const byparr = require("./byparr");
+
 const SCOREBOARD_URL = "https://api-web.nhle.com/v1/score/now";
 const CACHE_MS = 12000;
 
@@ -38,8 +40,7 @@ let cache = { at: 0, data: null, pending: null };
 async function scoreboard() {
   if (cache.data && Date.now() - cache.at < CACHE_MS) return cache.data;
   if (!cache.pending) {
-    cache.pending = fetch(SCOREBOARD_URL, { signal: AbortSignal.timeout(10000) })
-      .then(r => { if (!r.ok) throw new Error(`NHL API HTTP ${r.status}`); return r.json(); })
+    cache.pending = byparr.fetchPage(SCOREBOARD_URL, { signal: AbortSignal.timeout(10000) }, { json: true })
       .then(d => { cache = { at: Date.now(), data: d, pending: null }; return d; })
       .catch(e => { cache.pending = null; throw e; });
   }

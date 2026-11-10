@@ -10,6 +10,7 @@ const extractor = require("./extractor");
 const checker = require("./checker");
 const proxy = require("./proxy");
 const pagepool = require("./pagepool");
+const byparr = require("./byparr");
 
 const NHL_LEAGUES = ["nhl", "nhl preseason"];
 
@@ -123,6 +124,38 @@ async function fetcher() {
   return (await ready()).context.request;
 }
 
+// Byparr is slow and heavy, so a link it already failed on is left alone for a while.
+const BYPARR_COOLDOWN_MS = Number(process.env.HTV_BYPARR_COOLDOWN_MIN || 30) * 60000;
+const byparrTried = new Map(); // link -> time of the last attempt
+const M3U8_RE = /https?:(?:\\?\/){2}[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*/i;
+
+// The hidden pages found no playlist: either the embed is dead or a captcha/Cloudflare page stopped
+// them. Let Byparr load the embed (bare, then onhockey's wrapper), keep the cookies it earned, and look
+// for a playlist URL in the page. The player's own request headers aren't visible this way, so the
+// proxy replays the Referer and the solver's User-Agent (clearance cookies are tied to it).
+async function extractViaByparr(context, link, signal) {
+  if (!byparr.enabled() || signal?.aborted) return null;
+  const last = byparrTried.get(link);
+  if (last && Date.now() - last < BYPARR_COOLDOWN_MS) return null;
+  byparrTried.set(link, Date.now());
+  for (const url of ["https://" + link, extractor.wrapperUrl(link)]) {
+    try {
+      const s = await byparr.solve(url, { signal });
+      const m = M3U8_RE.exec(s.html.replace(/\\\//g, "/"));
+      if (!m) continue;
+      await context.addCookies(s.cookies).catch(() => {});
+      const headers = { Referer: s.url || url };
+      if (s.userAgent) headers["User-Agent"] = s.userAgent;
+      console.log(`byparr found a playlist for ${link}`);
+      return { url: m[0], headers, page: null };
+    } catch (err) {
+      if (signal?.aborted) return null;
+      console.error(`byparr failed for ${url}: ${err.message}`);
+    }
+  }
+  return null;
+}
+
 // Extract a link's stream and confirm its playlist really loads through the proxy.
 // `prior` (the link's last good capture, from a recheck) is tried first: if its playlist still
 // loads, the link is alive and no page needs to be opened.
@@ -130,10 +163,16 @@ async function extractVerified(link, { prior, ...opts } = {}) {
   const { context, blocker } = await ready();
   // A browser-only host's playlist can't be probed with the request API; it is re-extracted instead.
   if (prior && proxy.hasContext(prior.id) && !extractor.isBrowserOnly(prior.url) && await proxy.probe(context.request, prior.id, prior.url)) return prior;
+  const check = async capture => {
+    const id = proxy.addContext(capture.headers);
+    return (await extractor.verify(capture, url => proxy.probeStatus(context.request, id, url, { direct: true }))) ? { ...capture, id } : null;
+  };
   const capture = await extractor.extract(context, blocker, link, opts);
-  if (!capture) return null;
-  const id = proxy.addContext(capture.headers);
-  return (await extractor.verify(capture, url => proxy.probeStatus(context.request, id, url, { direct: true }))) ? { ...capture, id } : null;
+  const ok = capture && await check(capture);
+  if (ok) return ok;
+  // Dead link or captcha: one more try through Byparr.
+  const solved = await extractViaByparr(context, link, opts.signal);
+  return solved ? check(solved) : null;
 }
 
 // Unique NHL / NHL Preseason links in a scrape result.

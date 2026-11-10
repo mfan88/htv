@@ -29,6 +29,8 @@ services:
     image: ghcr.io/mfan88/htv:latest
     container_name: htv-server
     restart: unless-stopped
+    depends_on:
+      - byparr
     ports:
       - "8787:8787"
     environment:
@@ -54,12 +56,19 @@ services:
       HTV_BLOCK_HEAVY: "1"                 # link checks skip images/fonts/video
       HTV_LOGOS: /logos                    # thumbnail folder (optional, see the volume below)
       HTV_EDGE_PUBLIC: ""                  # public setup: "<source hostname>=<MediaMTX HLS URL>"
+      HTV_BYPARR_URL: http://byparr:8191   # captcha solver for scraped pages (remove to disable)
     volumes:
       - ./htv-data:/data
       # - ./logos:/logos:ro                # optional AWAY_vs_HOME.png thumbnails
     cpus: 4                                # CPU cap; raise or lower to taste
     cpu_shares: 256
     shm_size: 512m                         # Chromium needs more than Docker's 64 MB default
+
+  byparr:
+    image: ghcr.io/mfan88/htv-byparr:v3.1.1   # built by the same workflow from the pinned upstream release
+    container_name: htv-byparr
+    restart: unless-stopped
+    shm_size: 512m
 
   # The one place IPTV apps (TiviMate, VLC) pull from: one pull per channel, shared by all viewers.
   # Playlist for it: http://<host>:8787/api/m3u-edge?token=<HTV_TOKEN>
@@ -110,7 +119,7 @@ configs:
 
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
-Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Failing links: `HTV_FAIL_BACKOFF_AFTER` (3; after this many failed checks in a row a link is skipped for 10, then 30, then 60 minutes, any success resets it), `HTV_FAIL_BACKOFF_MAX_MIN` (60; longest skip) and `HTV_FAIL_DEMAND_RETRY_SEC` (120; a backed-off link someone is watching is still retried this often). Stream hosts that refuse plain requests but play in the browser are learned automatically and kept in `<data>/browser-hosts.json` (delete the file to relearn). Their playlists (and segments, if those are refused too) are fetched inside a few open browser pages: `HTV_BROWSER_PAGES` (3; most pages kept open, least recently used closed first) and `HTV_BROWSER_PAGE_IDLE_SEC` (60; a page with no request that long is closed). These pages are stubs without a player, so they cost little. Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
+Settings are environment variables (see `docker-compose.yml`): `HTV_TOKEN` (required in compose), `HTV_CONCURRENCY` (links checked at once, default 3), `HTV_REFRESH_MIN` (default 5), `HTV_PORT` (default 8787), `HTV_DATA` (caches, default `./htv-data`), `HTV_LOGOS` (thumbnail folder, default `<data>/logos`). Failover tuning (all optional): `HTV_PLAYLIST_TIMEOUT_SEC` (6), `HTV_SEGMENT_TIMEOUT_SEC` (12), `HTV_STALL_SEC` (12): how long a mirror may be slow or frozen before a channel switches to another one. Failing links: `HTV_FAIL_BACKOFF_AFTER` (3; after this many failed checks in a row a link is skipped for 10, then 30, then 60 minutes, any success resets it), `HTV_FAIL_BACKOFF_MAX_MIN` (60; longest skip) and `HTV_FAIL_DEMAND_RETRY_SEC` (120; a backed-off link someone is watching is still retried this often). Stream hosts that refuse plain requests but play in the browser are learned automatically and kept in `<data>/browser-hosts.json` (delete the file to relearn). Their playlists (and segments, if those are refused too) are fetched inside a few open browser pages: `HTV_BROWSER_PAGES` (3; most pages kept open, least recently used closed first) and `HTV_BROWSER_PAGE_IDLE_SEC` (60; a page with no request that long is closed). These pages are stubs without a player, so they cost little. Condensed guide: onhockey lists a game under many broadcasters and languages, so `/api/m3u`, `/api/m3u-edge` and `/api/xmltv` show one channel per game and role (home feed, away feed, French). A role merges its English broadcasters' mirrors, ordered by a stability score from the link checks (recent success rate, mid-stream downs and stalls count as failures), so the channel fails over across broadcasters. A role with no English feed falls back to any language so both sides stay covered; TSN / NHL Network style national feeds appear only when a game has no home or no away feed. `?all=1` on a list URL, or `HTV_CONDENSE=0`, brings back the full per-broadcaster list. Captcha pages: the compose file runs a pinned [Byparr](https://github.com/ThePhaseless/Byparr) container (image `ghcr.io/<owner>/htv-byparr`, built by the same GitHub workflow) and sets `HTV_BYPARR_URL`. Any schedule, GKStreams or NHL API fetch that fails or meets a captcha/Cloudflare page is retried through it, and so is a link whose embed page yielded no playlist (it looks for an `.m3u8` in the solved page and reuses the solver's cookies and User-Agent). Settings: `HTV_BYPARR_TIMEOUT_SEC` (60), `HTV_BYPARR_CONCURRENCY` (2), `HTV_BYPARR_COOLDOWN_MIN` (30; a link Byparr already tried is skipped this long). Leave `HTV_BYPARR_URL` unset to disable. Load tuning: `HTV_CHROMIUM_NICE` (15; link-check browser runs at low CPU priority so it cannot starve the stream proxy, 0 = off) and `HTV_DEMAND_SCOPE` (default: only the tuned channel's mirrors are kept warm; `game` keeps every feed of the tuned game warm, so switching feed is instant but uses far more CPU).
 
 To publish it, put a reverse proxy in front (Caddy: `reverse_proxy 127.0.0.1:8787 { flush_interval -1 }` so streams aren't buffered).
 
@@ -139,7 +148,7 @@ Put `AWAY_vs_HOME.png` files (NHL tricodes, e.g. `CHI_vs_BUF.png`, 16:9) in the 
 | `GET /health` | `{ ok, version }`, no token |
 | `GET /api/streams` | the scraped schedule plus `checks: { link: { status, at } }` |
 | `GET /api/summary` | flat numbers for dashboards (e.g. a Homepage customapi widget) |
-| `GET /api/m3u`, `/api/xmltv` | the Jellyfin tuner and guide |
+| `GET /api/m3u`, `/api/xmltv` | the Jellyfin tuner and guide: per game a home, an away and (if any) a French channel, English first (`?all=1` lists every broadcaster) |
 | `GET /live/<channel>.m3u8` | a channel's playlist, always from a working mirror |
 | `GET /s/…` | the stream proxy; URLs are signed, so players fetch them without the token |
 | `GET /logo/AWAY_vs_HOME.png` | thumbnails, no token (Jellyfin fetches them itself) |
