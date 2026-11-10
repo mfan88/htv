@@ -35,6 +35,11 @@ function teamsIn(gameName) {
   return found;
 }
 
+// HTV_TEAM (an NHL abbreviation) narrows the server to one team: every other game is dropped at the scrape,
+// so nothing else is ever checked, listed or proxied. Unset (the default) serves every NHL game.
+const TEAM = (process.env.HTV_TEAM || "").toUpperCase();
+const isTeamGame = gameName => !TEAM || teamsIn(gameName).includes(TEAM);
+
 let cache = { at: 0, data: null, pending: null };
 
 async function scoreboard() {
@@ -119,4 +124,4 @@ async function labels(gameNames) {
   return out;
 }
 
-module.exports = { forGame, labels, teamsIn, scoreboard };
+module.exports = { forGame, labels, teamsIn, scoreboard, TEAM, isTeamGame };

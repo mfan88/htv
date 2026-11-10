@@ -9,8 +9,19 @@
 //   HTV_HOST         address to bind (default 0.0.0.0)
 //   HTV_TOKEN        if set, requests need "Authorization: Bearer <token>" or ?token=<token>
 //   HTV_DATA         data directory for caches (default ./htv-data)
-//   HTV_CONCURRENCY  links checked at once (default 3)
-//   HTV_REFRESH_MIN  minutes between schedule scrapes (default 5)
+//   HTV_CONCURRENCY  links checked at once (default 2)
+//   HTV_TEAM         serve just one team, NHL abbreviation such as EDM (default: every NHL game)
+//   HTV_REFRESH_MIN  minutes between schedule scrapes near a game (default 5)
+//   HTV_IDLE_REFRESH_MIN  minutes between scrapes when no game is within 3 h (default 30)
+//   HTV_LEAD_MIN     minutes before a game starts that its links are warmed (default 30; old name HTV_PRIORITY_LEAD_MIN)
+//   HTV_POST_GAME_MIN minutes after a game ends that it stays warm and listed (default 30)
+//   HTV_GAME_MIN     assumed game length when the NHL scoreboard doesn't say it's over (default 210)
+//   HTV_DEMAND_MIN   a game someone tuned stays warm and listed this long after the last poll (default 20)
+//   HTV_BYPARR_URL   Byparr address (e.g. https://byparr.example.com); enables the SportSurge extra mirrors
+//   HTV_BYPARR_TOKEN sent as X-Byparr-Token when set (both can instead go in <HTV_DATA>/byparr.json as {"url","token"})
+//   HTV_SPORTSURGE_LEAD_MIN  fetch SportSurge pages from this long before a game (default 60)
+//   HTV_SPORTSURGE_REFRESH_MIN  refetch a cached page after this long (default 15)
+//   HTV_WARM_LINKS   mirrors per channel kept checked while a game is near (default 3, 0 = all)
 //   HTV_FAIL_BACKOFF_AFTER    consecutive failures before a link is backed off (default 3)
 //   HTV_FAIL_BACKOFF_MAX_MIN  longest backoff in minutes; the delays grow 10, 30, 60 (default 60)
 //   HTV_FAIL_DEMAND_RETRY_SEC a backed-off link someone tuned is still tried this often (default 120)
@@ -36,26 +47,33 @@ const TOKEN = process.env.HTV_TOKEN || "";
 const REFRESH_MS = +(process.env.HTV_REFRESH_MIN || 5) * 60 * 1000;
 const VERSION = require("../package.json").version;
 
-// Check scheduling. With HTV_PRIORITY_TEAMS set, links are only kept warm (rechecked every few
-// minutes) for those teams' games from HTV_PRIORITY_LEAD_MIN before the start until an hour after
-// the end, and for any game someone tuned within HTV_DEMAND_MIN. Everything else is rechecked
-// every HTV_IDLE_RECHECK_MIN. Unset, every game is kept warm as before.
-const PRIORITY = (process.env.HTV_PRIORITY_TEAMS || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
-const LEAD_MS = +(process.env.HTV_PRIORITY_LEAD_MIN || 60) * 60 * 1000;
+// Check scheduling. Links are only kept warm (rechecked every few minutes) from HTV_LEAD_MIN before a game
+// starts until HTV_POST_GAME_MIN after it ends, and for a game someone tuned within HTV_DEMAND_MIN. A game
+// ends when the NHL scoreboard says final, else HTV_GAME_MIN after the start. Past that window the game also
+// leaves the playlists and the guide (unless someone is still watching it). Outside the window nothing is checked at all (no Chromium pages): a tune extracts on demand. While warm, each
+// channel keeps only its best HTV_WARM_LINKS mirrors checked (0 = all); more are tried if those fail.
+const cfg = livetv.settings();
 const DEMAND_MS = +(process.env.HTV_DEMAND_MIN || 20) * 60 * 1000;
-// Outside the warm window each channel keeps only its first HTV_IDLE_LINKS mirrors in the checker
-// (default 1; 0 = check them all). The rest aren't probed until the game turns hot or is tuned.
-const IDLE_LINKS = +(process.env.HTV_IDLE_LINKS ?? 1);
-const IDLE_MS = process.env.HTV_IDLE_RECHECK_MIN ? +process.env.HTV_IDLE_RECHECK_MIN * 60 * 1000 : undefined;
+const WARM_LINKS = +(process.env.HTV_WARM_LINKS ?? 3);
 // Tuning a channel keeps that channel's mirrors warm (they are what failover switches between), not every
-// feed of the game: a game has dozens of mirrors and rechecking them all is what loads the CPU. HTV_DEMAND_SCOPE=game
-// restores the old behaviour (every feed of a tuned game stays warm, so changing feed is instant).
+// feed of the game. HTV_DEMAND_SCOPE=game restores the old behaviour (every feed of a tuned game stays warm).
 const DEMAND_BY_GAME = process.env.HTV_DEMAND_SCOPE === "game";
 const demandKey = g => (DEMAND_BY_GAME ? g.gameId : g.id);
+// A condensed channel stands for several broadcasters' channels: demand on it counts for each of them.
+const demandKeys = g => (DEMAND_BY_GAME ? [g.gameId] : g.members || [g.id]);
 const demand = new Map(); // channel id (or game id) -> last tune time
+const isDemanded = (g, now = Date.now()) => demandKeys(g).some(k => now - (demand.get(k) || 0) < DEMAND_MS);
+const ended = new Map(); // game id -> when the NHL scoreboard was first seen saying it is over
+let lastLabels = {}; // the scoreboard labels of the last schedule() run, for callers that must not wait on the NHL API
+const winOpts = () => ({ cfg, ended, demanded: g => isDemanded(g) });
 
 const DATA = path.resolve(process.env.HTV_DATA || "htv-data");
 fs.mkdirSync(DATA, { recursive: true });
+// Settings that were renamed or dropped: say so instead of ignoring them.
+if (process.env.HTV_PRIORITY_LEAD_MIN && !process.env.HTV_LEAD_MIN) console.log("HTV_PRIORITY_LEAD_MIN is deprecated, use HTV_LEAD_MIN");
+for (const [old, use] of [["HTV_PRIORITY_TEAMS", "HTV_TEAM (blank serves every team)"], ["HTV_IDLE_RECHECK_MIN", "HTV_IDLE_REFRESH_MIN (and nothing is rechecked when idle)"], ["HTV_IDLE_LINKS", "HTV_WARM_LINKS"]]) {
+  if (process.env[old]) console.log(`${old} is ignored, use ${use}`);
+}
 // A stray rejection from a page or socket must not take the server down.
 process.on("unhandledRejection", err => console.error("unhandled rejection:", err));
 process.on("uncaughtException", err => console.error("uncaught exception:", err));
@@ -64,6 +82,9 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 const state = { data: null, error: null, scrapedAt: null, startedAt: new Date().toISOString() };
 const streamsFile = () => path.join(DATA, "streams.json");
 
+// The scrape is the only periodic network work when no game is near, so it slows down then: every
+// REFRESH_MS from 3 h before a game until it ends, else every HTV_IDLE_REFRESH_MIN.
+const IDLE_REFRESH_MS = +(process.env.HTV_IDLE_REFRESH_MIN || 30) * 60 * 1000;
 async function refresh() {
   try {
     state.data = await scraper.scrape(streamsFile());
@@ -76,31 +97,48 @@ async function refresh() {
     }
     log("scrape failed:", state.error);
   }
-  schedule();
+  await schedule().catch(err => log("schedule failed:", err.message || err));
   log(`schedule: ${state.data?.streams?.length ?? 0} links, ${engine.nhlLinks(state.data).length} NHL`);
+  const near = livetv.hotLinks(state.data, { cfg: { ...cfg, leadMs: 3 * 60 * 60 * 1000 }, labels: lastLabels, ended, demanded: g => isDemanded(g) }).size > 0;
+  setTimeout(refresh, state.error || near ? REFRESH_MS : IDLE_REFRESH_MS).unref?.();
 }
 
 let lastHot = -1;
-function schedule() {
-  const hot = livetv.hotLinks(state.data, PRIORITY.length ? { teams: PRIORITY, leadMs: LEAD_MS } : {});
-  if (PRIORITY.length) {
-    const now = Date.now();
-    for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => hot.add(l));
-  }
-  let links = engine.nhlLinks(state.data);
-  if (PRIORITY.length && IDLE_LINKS > 0) {
-    const keep = new Set(hot);
-    // The best mirrors of the channels people see; broadcasters the condensed list hides stay unchecked until tuned.
-    for (const g of channelList(checker.statuses())) g.links.slice(0, IDLE_LINKS).forEach(l => keep.add(l));
-    links = links.filter(l => keep.has(l));
-  }
-  if (hot.size !== lastHot) log(`mode: ${hot.size ? `warm, keeping ${hot.size} links hot` : "idle"}`);
-  lastHot = hot.size;
-  // Links of games someone tuned recently: a link that keeps failing is still retried for them (rarely).
-  const watched = new Set();
+async function schedule() {
   const now = Date.now();
-  for (const g of livetv.games(state.data)) if (now - (demand.get(demandKey(g)) || 0) < DEMAND_MS) g.links.forEach(l => watched.add(l));
-  checker.check(links, { hot, idleMs: IDLE_MS, demand: watched });
+  const labels = lastLabels = await nhlLabels();
+  const statuses = checker.statuses();
+  const shown = channelList(statuses); // what the playlists list (condensed unless HTV_CONDENSE=0)
+  // Raw per-broadcaster channels too: they can still be tuned (?all=1, old playlists) and must not read as "gone".
+  const games = [...livetv.games(state.data, statuses, checker.score), ...(shown[0]?.members ? shown : [])];
+  for (const g of games) if (livetv.isFinal(labels[g.name]) && !ended.has(g.gameId)) ended.set(g.gameId, now);
+  for (const id of [...ended.keys()]) if (!games.some(g => g.gameId === id)) ended.delete(id);
+  const hot = livetv.hotLinks(state.data, { labels, cfg, ended, demanded: g => isDemanded(g, now) });
+  const warm = new Set(), watched = new Set();
+  for (const g of games) if (isDemanded(g, now)) g.links.forEach(l => watched.add(l));
+  // Only the channels people see are kept warm (their mirrors are ordered by stability); a hidden
+  // broadcaster is checked once someone tunes it.
+  for (const g of shown) {
+    if (!g.links.some(l => hot.has(l)) && !isDemanded(g, now)) continue;
+    (WARM_LINKS > 0 ? g.links.slice(0, WARM_LINKS) : g.links).forEach(l => warm.add(l));
+  }
+  if (warm.size !== lastHot) log(`mode: ${warm.size ? `warm, keeping ${warm.size} links hot` : "idle"}`);
+  lastHot = warm.size;
+  checker.check([...warm], { hot: warm, demand: watched });
+  dropFinished(games, labels, now);
+}
+
+// A game past its window is gone from the playlists: close the pages of any channel still on it.
+function dropFinished(games, labels, now) {
+  const over = new Set(games.filter(g => livetv.phase(g, labels[g.name], state.data, { now, cfg, ended, demanded: isDemanded(g, now) }) === "over").map(g => g.id));
+  for (const id of current.keys()) if (!games.some(g => g.id === id)) over.add(id); // gone from the schedule altogether
+  for (const id of over) {
+    const entry = current.get(id);
+    if (entry) { engine.pool.release(entry.capture.id); current.delete(id); log(`closed ${id}: game is over`); }
+    liveShared.delete(id);
+  }
+  for (const id of liveShared.keys()) if (!games.some(g => g.id === id)) liveShared.delete(id);
+  for (const [key] of demand) if (!games.some(g => demandKey(g) === key)) demand.delete(key);
 }
 
 function authorized(req, url) {
@@ -251,12 +289,13 @@ async function liveList(req, res, format, edge = false) {
   // so MediaMTX doesn't list or pull dead streams.
   if (edge) list = list.filter(g => !g.links.every(l => statuses[l] === "fail"));
   const labels = await nhlLabels();
+  const now = Date.now();
   if (format === "m3u") {
     res.writeHead(200, { "Content-Type": "audio/x-mpegurl; charset=utf-8", "Cache-Control": "no-store" });
-    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN, l => logoUrl(req, l), state.data || {}, Date.now(), edge ? edgeUrl(req) : null));
+    return res.end(livetv.m3u(list, labels, baseUrl(req), TOKEN, l => logoUrl(req, l), state.data || {}, now, edge ? edgeUrl(req) : null, winOpts()));
   }
   res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" });
-  res.end(livetv.xmltv(list, labels, state.data || {}, l => logoUrl(req, l)));
+  res.end(livetv.xmltv(list, labels, state.data || {}, l => logoUrl(req, l), now, winOpts()));
 }
 
 // Extract up to a few links at once and keep the first that works; the rest are
@@ -393,11 +432,12 @@ async function live(req, res, url) {
   const game = livetv.condense(state.data, statuses, checker.score).find(g => g.id === id)
     || livetv.games(state.data, statuses, checker.score).find(g => g.id === id);
   if (!game) return sendJson(res, 404, { error: "unknown channel" });
+  // A finished game has left the playlists; a viewer who is still polling it keeps it alive through `demand`.
+  if (livetv.phase(game, lastLabels[game.name], state.data, { cfg, ended, demanded: isDemanded(game) }) === "over") return sendJson(res, 404, { error: "unknown channel" });
   // Someone is watching (ffmpeg polls this for the whole viewing): keep this game's mirrors warm.
-  const keys = (game.members || [game.id]).map(m => (DEMAND_BY_GAME ? game.gameId : m));
-  const fresh = Date.now() - (demand.get(keys[0]) || 0) > DEMAND_MS;
-  for (const k of keys) demand.set(k, Date.now());
-  if (PRIORITY.length && fresh) schedule();
+  const fresh = !isDemanded(game);
+  for (const k of demandKeys(game)) demand.set(k, Date.now());
+  if (fresh) schedule().catch(() => {});
 
   // Poll within LIVE_SHARE_MS of a finished resolve, or during one, and share its result.
   let shared = liveShared.get(id);
@@ -504,7 +544,7 @@ function startHttp() {
 }
 
 (async () => {
-  checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 3));
+  checker.setConcurrency(+(process.env.HTV_CONCURRENCY || 2));
   checker.onStatusChange((link, status) => { if (status !== "checking") log(`${status.padEnd(4)} ${link}`); });
   checker.onBackoff((link, fails, min) => log(fails
     ? `backoff ${link}: failed ${fails} times in a row, next check in ${min} min`
@@ -512,6 +552,5 @@ function startHttp() {
   await engine.start(DATA);
   startHttp();
   await refresh();
-  setInterval(refresh, REFRESH_MS);
-  setInterval(schedule, 60 * 1000); // hot links are due every 3 min; the scrape only runs every few
+  setInterval(() => schedule().catch(err => log("schedule failed:", err.message || err)), 60 * 1000); // hot links are due every 5 min; the scrape runs on its own timer
 })();

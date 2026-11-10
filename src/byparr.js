@@ -3,11 +3,20 @@
 //
 // Byparr drives a real browser per request, so calls are slow and heavy. They are queued
 // (HTV_BYPARR_CONCURRENCY at once) and only made after a plain request was blocked or failed.
-const BASE = (process.env.HTV_BYPARR_URL || "").replace(/\/+$/, "");
+const fs = require("fs");
+const path = require("path");
 const TIMEOUT_MS = Number(process.env.HTV_BYPARR_TIMEOUT_SEC || 60) * 1000;
 const CONCURRENCY = Math.max(1, Number(process.env.HTV_BYPARR_CONCURRENCY || 2));
 
-const enabled = () => !!BASE;
+// Address and token: the environment, else <HTV_DATA>/byparr.json ({ "url": "...", "token": "..." }), the
+// same places sportsurge.js looks, so one setting serves both.
+function config() {
+  let file = {};
+  try { file = JSON.parse(fs.readFileSync(path.join(process.env.HTV_DATA || "htv-data", "byparr.json"), "utf8")); } catch {}
+  return { url: (process.env.HTV_BYPARR_URL || file.url || "").replace(/\/+$/, ""), token: process.env.HTV_BYPARR_TOKEN || file.token || "" };
+}
+
+const enabled = () => !!config().url;
 
 // Challenge pages answer 403/503, or return a "just a moment" interstitial with a 200.
 const looksBlocked = (status, body) =>
@@ -34,11 +43,12 @@ async function slot(signal) {
 async function solve(url, { signal } = {}) {
   if (!enabled()) throw new Error("byparr is not configured");
   if (signal?.aborted) throw new Error("aborted");
+  const { url: api, token } = config();
   const release = await slot(signal);
   try {
-    const res = await fetch(`${BASE}/v1`, {
+    const res = await fetch(/\/v1$/.test(api) ? api : `${api}/v1`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(token ? { "X-Byparr-Token": token } : {}) },
       body: JSON.stringify({ cmd: "request.get", url, maxTimeout: TIMEOUT_MS, blockMedia: true }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS + 10000)]) : AbortSignal.timeout(TIMEOUT_MS + 10000),
     });

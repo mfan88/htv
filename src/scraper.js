@@ -4,8 +4,9 @@
 
 const fs = require("fs");
 const { Parser } = require("htmlparser2");
-const gkstreams = require("./gkstreams");
+const sportsurge = require("./sportsurge");
 const byparr = require("./byparr");
+const { isTeamGame } = require("./stats");
 
 const SCHEDULE_URL = "https://onhockey.tv/schedule_table.php";
 const FULL_PREFIX = "https://onhockey.tv/index.php?place=np_stream400&channel=//";
@@ -96,19 +97,19 @@ function fetchSchedule() {
   }, { decode: async r => new TextDecoder("windows-1251").decode(await r.arrayBuffer()) });
 }
 
-// GKStreams links are extra mirrors; if that site is down the onhockey schedule still stands.
+// SportSurge links are extra mirrors; if that site (or Byparr) is down the onhockey schedule still stands.
 async function extraMirrors(streams) {
   try {
     const have = new Set(streams.map(r => `${r.game}|${r.feed}|${r.channel}|${r.link}`));
-    return (await gkstreams.mirrors(streams)).filter(r => !have.has(`${r.game}|${r.feed}|${r.channel}|${r.link}`));
+    return (await sportsurge.mirrors(streams)).filter(r => !have.has(`${r.game}|${r.feed}|${r.channel}|${r.link}`));
   } catch (err) {
-    console.error("gkstreams failed:", err.message || err);
+    console.error("sportsurge failed:", err.message || err);
     return [];
   }
 }
 
 async function scrape(outputPath) {
-  const streams = parseSchedule(await fetchSchedule());
+  const streams = parseSchedule(await fetchSchedule()).filter(r => isTeamGame(r.game));
   const data = {
     updated: new Date().toISOString(),
     source_utc_offset: SOURCE_UTC_OFFSET,

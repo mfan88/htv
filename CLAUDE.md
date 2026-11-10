@@ -13,7 +13,9 @@ It used to be an Electron desktop app plus an Android TV app. Both were deleted 
 | `src/extractor.js` | Loads an embed in two hidden pages at once (onhockey's wrapper and the bare embed) and captures the first `.m3u8` GET plus the player's request headers |
 | `src/proxy.js` | Fetches upstream through the context's request API (shared cookies, captured headers replayed), rewrites playlists, unwraps segments disguised as images (fake WebP/PNG header before the TS packets; ffmpeg can't read those), `probe()` |
 | `src/checker.js` | Queue of link checks (`setConcurrency`); hot links (games on/near the air) are rechecked sooner and queued first |
-| `src/livetv.js` | M3U and XMLTV: one channel per game + feed/channel pair (id = hash of league/time/game/feed/channel); `hotLinks()` |
+| `src/livetv.js` | M3U and XMLTV: one channel per game + feed/channel pair (id = hash of league/time/game/feed/channel); `hotLinks()`. `condense()` is what the lists show by default (`HTV_CONDENSE=0` or `?all=1` for the raw list): per game a home, an away and a French channel, English first, merging that role's broadcasters' mirrors ordered by `checker.score` (id = game + role). `/live/<id>` resolves condensed ids first, then raw ones |
+| `src/byparr.js` | Byparr client shared by the fetches: `fetchPage()` tries a plain request and retries through Byparr when it fails or meets a captcha/Cloudflare page (schedule, NHL API); `solve()` is used by `engine.extractViaByparr` when a link's pages yield no playlist (30 min cooldown per link). Same config as sportsurge (`HTV_BYPARR_URL`/`HTV_BYPARR_TOKEN` or `<data>/byparr.json`). The compose file runs a pinned Byparr container; CI builds it as `ghcr.io/<owner>/htv-byparr` |
+| `src/sportsurge.js` | Extra mirrors from v2.sportsurge.net through Byparr (`HTV_BYPARR_URL`/`HTV_BYPARR_TOKEN`, or `<data>/byparr.json`; Cloudflare challenge). Fetches the hockey page and a game's page only within `HTV_SPORTSURGE_LEAD_MIN` of its start, caches them, and never blocks the scrape (returns the cache, refreshes in the background). Replaced GKStreams |
 | `src/scraper.js` | Fetches `https://onhockey.tv/schedule_table.php` (cp1251), parses with htmlparser2. Records `{league, game, time, feed, name, channel, link}` |
 | `src/stats.js` | NHL API (`api-web.nhle.com/v1/score/now`): `CGY @ EDM` labels and start times. onhockey lists games "away - home" |
 | `Dockerfile`, `docker-compose.yml` | Node + Chromium headless shell under `tini`; data in `/data`, thumbnails mounted at `/logos` (`HTV_LOGOS` in `.env`) |
@@ -25,7 +27,8 @@ It used to be an Electron desktop app plus an Android TV app. Both were deleted 
 ## Conventions
 
 - CommonJS, no build step. Match the existing style: short comments that explain *why*.
-- Only NHL and NHL Preseason links are used (`engine.NHL_LEAGUES`).
+- Only NHL and NHL Preseason links are used (`engine.NHL_LEAGUES`), and, if `HTV_TEAM` is set (default: unset = every team, `stats.isTeamGame`), only that team: the scraper and sportsurge drop every other game before anything is checked or served.
+- CPU: nothing is checked outside the warm window (`HTV_LEAD_MIN` before a game to `HTV_POST_GAME_MIN` after its end, or a tuned channel; `livetv.phase()` decides, and the playlist and guide drop games past it); the scrape slows to `HTV_IDLE_REFRESH_MIN` when no game is within 3 h; warm channels check only their best `HTV_WARM_LINKS` mirrors.
 - Commit messages end with a `Co-Authored-By:` line.
 
 ## Running and testing
