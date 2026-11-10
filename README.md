@@ -58,7 +58,11 @@ services:
       HTV_BLOCK_HEAVY: "1"                 # link checks skip images/fonts/video
       HTV_LOGOS: /logos                    # thumbnail folder (optional, see the volume below)
       HTV_EDGE_PUBLIC: ""                  # public setup: "<source hostname>=<MediaMTX HLS URL>"
-      HTV_BYPARR_URL: http://byparr:8191   # captcha solver for scraped pages (remove to disable)
+      HTV_CONDENSE: 1                      # playlists list one home / away / French channel per game (0 = every broadcaster; ?all=1 per request)
+      HTV_BYPARR_URL: http://byparr:8191   # captcha solver, used as a fallback (remove this line and the byparr service to disable)
+      # HTV_BYPARR_TOKEN: ""               # only if your Byparr sits behind a token (sent as X-Byparr-Token)
+      HTV_BYPARR_CONCURRENCY: 2            # solves at once; use 1 on a small machine (Raspberry Pi)
+      HTV_BYPARR_COOLDOWN_MIN: 30          # a link Byparr already tried is left alone this long
     volumes:
       - ./htv-data:/data
       # - ./logos:/logos:ro                # optional AWAY_vs_HOME.png thumbnails
@@ -118,6 +122,17 @@ configs:
 ```
 
 (`$$` is how compose writes a literal `$`; leave it.)
+
+#### Adapting this file (for people and agents)
+
+Edit only the values below; leave the structure alone. After editing run `docker compose config -q` to validate, then `docker compose up -d`.
+
+- **Token:** replace `CHANGE_ME` in both places (htv's `HTV_TOKEN` and the MediaMTX `source:` line).
+- **Public hostnames:** none are baked in. The server never needs to know its own public name except for the MediaMTX playlist: set `HTV_EDGE_PUBLIC` to `"<hostname clients use for /api/m3u-edge>=<public MediaMTX HLS URL>"` (e.g. `"htv.example.com=https://hls.example.com"`), or leave it empty to use `http://<host>:8888`. Put your own reverse proxy in front of port 8787 (`flush_interval -1` so streams aren't buffered) and, for the edge playlist, of 8888. Point each public hostname's DNS at the machine (DNS-only if it is behind Cloudflare, so video doesn't pass through the proxy). Byparr needs no public name and publishes no port.
+- **Byparr:** keep the bundled `byparr` service (default), or use an existing instance by deleting the `byparr` service and `depends_on`, and setting `HTV_BYPARR_URL` (and `HTV_BYPARR_TOKEN` if it needs one) to its address. Alternatively put `{"url": "...", "token": "..."}` in `./htv-data/byparr.json`; the environment variable wins over the file. Remove the variable and the file to run without Byparr (captcha pages are then not retried).
+- **Small or ARM machines (Raspberry Pi):** the images are multi-arch. Byparr runs a full browser, so set `HTV_BYPARR_CONCURRENCY: 1`, lower `HTV_CONCURRENCY` and `HTV_BROWSER_PAGES`, and lower `cpus`/`shm_size` only if Docker rejects them.
+- **Channel lists:** `/api/m3u`, `/api/m3u-edge` and `/api/xmltv` are condensed by default (one home, away and French channel per game, English first). Channel ids change when the list shape changes, so after switching `HTV_CONDENSE` refresh the tuner and guide in Jellyfin or your IPTV app.
+- **Scope:** set `HTV_TEAM` to serve one team; `HTV_LOGOS` and the `./logos` volume are optional.
 
 Without Docker: `npm install && npx playwright-core install chromium && node src/server.js`.
 
